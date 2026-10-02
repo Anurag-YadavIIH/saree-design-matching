@@ -670,6 +670,41 @@ Recorded before either Kaggle run, so the bar cannot be moved to fit the result.
      to gray zero-shot correctly FAILS.
 - **Residual risk:** if Kaggle's split differs from the local one, some Kaggle test designs were
   never in the human audit. The eval reports that coverage; a large gap would need a re-audit.
+- **Rule for unreviewed test designs (added before any checkpoint was scored):** a test design
+  the visual audit never covered is excluded if its nearest TRAIN image by zero-shot DINOv2
+  cosine is >= 0.90. Evidence: in the audit, 12 of 12 Drive pairs at cosine >= 0.91 were the
+  same saree, and 7 of 13 in 0.80 to 0.91. Applied to Drive and Kaggle alike, with the same
+  embedding the leakage audit used. Human judgement overrides it for reviewed designs.
+  - Reported every run: reviewed+excluded, rule-excluded, unreviewed-kept, final test design
+    count (`outputs/exclusions_resolved.json`).
+  - Resolved ONCE in the baseline run and reused, verified by a manifest fingerprint, in the
+    checkpoint run. Recomputing a 0.90 cutoff twice on a GPU could flip a borderline design
+    and score the bars and the checkpoints on different test sets.
+  - The bars in `bars.json` are computed from baselines evaluated AFTER all exclusions.
+  - Known cost: below 0.90 the audit found 7 of 13 pairs were the same saree, so unreviewed
+    designs between 0.80 and 0.90 may still leak. A lower cutoff would remove more true leaks
+    and more innocent designs; 0.90 is where the audit evidence is unambiguous.
 - **What I would do with more time:** make identity robust to borderline flips (a margin band
   around the gate, sent to human review), and assign splits by a hash of each design's stable
   key instead of a sequential RNG, so one design changing cannot reshuffle the rest.
+
+---
+
+### D-46: Training was compute-limited: about 240 of 3,000 planned steps per run
+- **Evidence (Kaggle Version #1 log):** about 3.0 s per step (10 steps per ~30 s); loss 1.34 to
+  1.19 by step 200; with TRAIN_MINUTES = 12 each run reaches only about 240 steps against the
+  3,000 planned, roughly 8% of the intended optimisation.
+- **Likely cause (inferred, not profiled):** the CPU data pipeline, not the GPU. Each step builds
+  128 views (32 designs x 4), and each view is decoded, recoloured (k-means palette swap or
+  tonal remap, both via LAB conversions), warped and JPEG re-encoded at the image's FULL
+  resolution, only downscaled to 224 at the end. Drive images reach 1512 px, about 45x the
+  pixels of 224 x 224, and the loader ran 2 workers on Kaggle's 4 vCPUs. A ViT-S/14 forward and
+  backward pass on 128 images at 224 should take a fraction of a second on a T4.
+- **Consequence:** both checkpoints are undertrained. A FAIL on D-34 would partly reflect the
+  compute budget rather than the approach, and must be reported that way.
+- **Fix (not applied; the deadline came first):**
+  1. Downscale each image to about 320 px BEFORE recolour and geometry; the cheapest, largest win.
+  2. Precompute a bank of recoloured views per image offline and sample from it at train time.
+  3. Move recolouring to the GPU: the cluster-map lookup and LAB arithmetic are tensor ops.
+  4. More DataLoader workers (4 on Kaggle) with prefetching, and profile one step to confirm
+     where the time goes before choosing among 1 to 3.

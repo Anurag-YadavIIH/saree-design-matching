@@ -127,7 +127,27 @@ def tar_with_ci(q_emb, q_designs, g_emb, g_designs, thr, n_boot):
     return float(hit.mean()), ci["tar"]
 
 
-def resolve_exclusions(path: Path, data_config: str) -> tuple[list[str], str]:
+def manifest_fingerprint(real: pd.DataFrame) -> str:
+    """Hash of (image_id, design_id, split) over real rows: identifies one exact manifest."""
+    import hashlib
+    rows = sorted(zip(real["image_id"], real["design_id"], real["split"]))
+    return hashlib.sha1(repr(rows).encode()).hexdigest()[:16]
+
+
+def load_resolved(path: Path, data_config: str) -> tuple[list[str], str]:
+    """Reuse exclusions resolved earlier, refusing if the manifest has changed since."""
+    import json as _json
+    blob = _json.loads(path.read_text(encoding="utf-8"))
+    real = load_manifest(include_synthetic=False, config_path=data_config)
+    fp = manifest_fingerprint(real)
+    if blob["manifest_fingerprint"] != fp:
+        raise SystemExit(f"{path} was resolved on manifest {blob['manifest_fingerprint']}, "
+                         f"this is {fp}; re-resolve instead of reusing")
+    print(f"[eval] reusing {len(blob['excluded'])} exclusions from {path} (manifest {fp})")
+    return blob["excluded"], blob["summary"]
+
+
+def resolve_exclusions(path: Path, data_config: str, device: str = "cpu") -> tuple[list[str], str]:
     """Turn the audit's image_id LINKS into test design_ids for the manifest being evaluated.
 
     Design ids are renumbered whenever a borderline geometric match flips between machines, and
@@ -181,9 +201,63 @@ def resolve_exclusions(path: Path, data_config: str) -> tuple[list[str], str]:
     audited = set(cfg.get("audited_test_image_ids") or [])
     test_designs = set(real.loc[real["split"] == "test", "design_id"])
     covered = set(real.loc[real["image_id"].isin(audited), "design_id"]) & test_designs
-    coverage = (f"{len(covered)} of {len(test_designs)} current test designs were in the audited "
-                f"test set; {len(test_designs - covered)} were never reviewed by a human")
-    return excluded, coverage
+    # Every link exclusion counts as audit-based, including a PARTNER design that moved into
+    # test on this split and was never reviewed itself: the human judged the pair, not the side.
+    reviewed_excluded = sorted(set(excluded))
+
+    # Rule for designs the human audit never saw (Kaggle's split can differ from the audited
+    # one). Evidence from the audit: 12 of 12 Drive pairs at cosine >= 0.91 were the same
+    # saree, and 7 of 13 in 0.80 to 0.91. Same embedding as the leakage audit: zero-shot DINOv2
+    # (RGB, 224), max cosine over all the design's real test images vs all real train images.
+    rule = cfg.get("rule") or {}
+    thr = float(rule.get("unreviewed_nearest_train_cosine_min", 0.90))
+    unreviewed = sorted(test_designs - covered - set(excluded))
+    rule_excluded: list[str] = []
+    if unreviewed:
+        from src.data.geometric_id import dinov2_embeddings
+        from src.data.manifest import data_root as _data_root
+        root = _data_root(data_config)
+        te = real[(real["split"] == "test") & real["design_id"].isin(unreviewed)]
+        tr = real[real["split"] == "train"]
+        e_te = dinov2_embeddings([root / p for p in te["path"]], device=device)
+        e_tr = dinov2_embeddings([root / p for p in tr["path"]], device=device)
+        best = (e_te @ e_tr.T).max(axis=1)
+        per_design = pd.Series(best, index=te["design_id"].to_numpy()).groupby(level=0).max()
+        rule_excluded = sorted(per_design[per_design >= thr].index)
+        excluded += [d for d in rule_excluded if d not in excluded]
+
+    kept_unreviewed = len(unreviewed) - len(rule_excluded)
+    kept_reviewed = len(covered - set(excluded))
+    final = len(test_designs) - len(excluded)
+    assert (len(reviewed_excluded) + len(rule_excluded) + kept_unreviewed + kept_reviewed
+            == len(test_designs)), "exclusion counts do not add up to the test set"
+    summary = (f"{len(test_designs)} test designs: {len(reviewed_excluded)} excluded by audit "
+               f"links; {len(covered)} human-reviewed, of which {kept_reviewed} kept; "
+               f"{len(unreviewed)} unreviewed: {len(rule_excluded)} excluded by the cosine rule "
+               f"(nearest train >= {thr}), {kept_unreviewed} kept; "
+               f"final test set {final} designs")
+    print(f"[eval] EXCLUSION SUMMARY: reviewed+excluded {len(reviewed_excluded)} | "
+          f"rule-excluded {len(rule_excluded)} | unreviewed-kept {kept_unreviewed} | "
+          f"reviewed-kept {kept_reviewed} | final test designs {final} "
+          f"(of {len(test_designs)})")
+
+    import json as _json
+    out = Path("outputs/exclusions_resolved.json")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(_json.dumps({
+        "manifest_fingerprint": manifest_fingerprint(real),
+        "excluded": excluded,
+        "reviewed_excluded": reviewed_excluded,
+        "rule_excluded": rule_excluded,
+        "rule_threshold": thr,
+        "counts": {"test_designs": len(test_designs), "reviewed": len(covered),
+                   "reviewed_excluded": len(reviewed_excluded), "unreviewed": len(unreviewed),
+                   "rule_excluded": len(rule_excluded), "unreviewed_kept": kept_unreviewed,
+                   "reviewed_kept": kept_reviewed,
+                   "final_test_designs": final},
+        "summary": summary}, indent=2), encoding="utf-8")
+    print(f"[eval] resolved exclusions saved to {out} (reuse with --exclusions-from)")
+    return excluded, summary
 
 
 def evaluate_method(name: str, embed_fn, test_g: pd.DataFrame, test_q: pd.DataFrame,
@@ -372,6 +446,8 @@ def main() -> int:
     ap.add_argument("--n-boot", type=int, default=1000)
     ap.add_argument("--exclude", default="configs/eval_exclude.yaml",
                     help="test designs dropped post hoc as suspected leaks")
+    ap.add_argument("--exclusions-from", default=None,
+                    help="reuse an exclusion list resolved by an earlier run on this manifest")
     ap.add_argument("--out", default="outputs/results")
     ap.add_argument("--device", default=None)
     args = ap.parse_args()
@@ -385,8 +461,13 @@ def main() -> int:
     test_g = load_manifest(split="test", role="gallery", config_path=args.data_config)
     test_q = load_manifest(split="test", role="query", config_path=args.data_config)
 
-    # Post-hoc leakage exclusion, resolved against THIS manifest (configs/eval_exclude.yaml).
-    excluded, coverage = resolve_exclusions(Path(args.exclude), args.data_config)
+    # Post-hoc leakage exclusion, resolved against THIS manifest (configs/eval_exclude.yaml):
+    # human-audited links first, then a cosine rule for test designs the audit never covered.
+    # Resolved ONCE and saved, so the baseline run and the checkpoint run use the same test set.
+    if args.exclusions_from:
+        excluded, coverage = load_resolved(Path(args.exclusions_from), args.data_config)
+    else:
+        excluded, coverage = resolve_exclusions(Path(args.exclude), args.data_config, device)
     if excluded:
         n_q = int(test_q["design_id"].isin(excluded).sum())
         test_g = test_g[~test_g["design_id"].isin(excluded)].reset_index(drop=True)
@@ -444,7 +525,7 @@ def main() -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     md = to_markdown(results, far)
     note = (f"**Post-hoc leakage exclusion:** {len(excluded)} test design(s) removed from "
-            f"gallery and queries ({', '.join(excluded)}); see DECISIONS.md D-38."
+            f"gallery and queries. {coverage}. See DECISIONS.md D-38 and D-45."
             if excluded else "No post-hoc leakage exclusions applied.")
     head = "# Results"
     md = md.replace(head, head + chr(10) + chr(10) + note, 1)
