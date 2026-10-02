@@ -1,0 +1,51 @@
+# Post-hoc leakage exclusion. Test designs listed here are dropped from the test gallery AND
+# queries by scripts/evaluate.py, which logs how many were removed.
+#
+# Why post hoc and not a retrain: the leakage audit (scripts/audit_pairs.py) can only flag a
+# test design whose nearest TRAIN image might be a separate photograph of the same saree. Such
+# pairs share no pixels, so no content method proves them; a human decides from
+# outputs/leakage_pairs.jpg. Excluding the TEST side removes the possible leak from every
+# reported number without retraining. The model has still seen the train-side design, which
+# is fine: the train side was never a test target.
+#
+# Populated ONLY with designs a human judged to be the same saree. Candidates from the audit
+# (none pixel-verified; best NCC 0.853 for #4, rotated 90 degrees), for reference:
+#   #4 drive_d00003 (train drive_d00083)   #5 drive_d00034 (train drive_d00024)
+#   #1 drive_d00030 (train drive_d00012)   #2 drive_d00045 (train drive_d00073)
+#   #3 drive_d00039 (train drive_d00027)
+exclude_test_designs:
+  # Visual audit 2026-10-02 08:30 (side-by-side review of each test design vs its nearest
+  # train image by zero-shot DINOv2 cosine; sheets in outputs/audit_pairs/, gitignored).
+  # Drive: separate photographs of the SAME physical saree (different region/framing),
+  # which the crop-overlap grouping cannot detect. 12/12 checked pairs with cos >= 0.91 and
+  # 7/13 in 0.80-0.91 were the same saree.
+  - drive_d00030
+  - drive_d00045
+  - drive_d00039
+  - drive_d00003
+  - drive_d00034
+  - drive_d00033
+  - drive_d00037
+  - drive_d00007
+  - drive_d00005
+  - drive_d00078
+  - drive_d00028
+  - drive_d00041
+  - drive_d00067
+  - drive_d00087
+  - drive_d00036
+  - drive_d00061
+  - drive_d00020
+  - drive_d00016
+  - drive_d00055
+  # Kaggle: a REAL colourway twin of the same design (same print, different colours) sits in
+  # train under a different design_id. The test design is therefore not unseen.
+  - kaggle_d00166
+  - kaggle_d00206
+  - kaggle_d00259
+  - kaggle_d00298
+  - kaggle_d00083
+  - kaggle_d00086
+  # Kaggle, plausible but not certain twins; excluded conservatively.
+  - kaggle_d00223
+  - kaggle_d00160

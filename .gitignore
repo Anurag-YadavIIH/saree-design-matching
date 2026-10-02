@@ -1,0 +1,21 @@
+# Proprietary data: never commit
+data/*
+!data/.gitkeep
+
+# Outputs (may contain image previews of proprietary data)
+outputs/*
+!outputs/.gitkeep
+*.png
+*.jpg
+*.jpeg
+*.pt
+*.pth
+*.ckpt
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+venv/
+.env

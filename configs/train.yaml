@@ -1,0 +1,68 @@
+# Training configuration. See DECISIONS.md for why each value is what it is.
+
+seed: 42
+data_config: configs/data.yaml
+
+model:
+  backbone: dinov2_vits14
+  embed_dim: 128
+  hidden_dim: 512
+  unfreeze_last_n_blocks: 4           # early blocks are generic; only late ones specialise
+  img_size: 224
+  # rgb or gray. Gray replicates one channel to three, so the backbone is unchanged. Two runs
+  # (one each) answer whether colour input helps once tonal queries punish gray shortcuts.
+  input_mode: rgb
+
+loss:
+  name: supcon
+  temperature: 0.07                   # sharp, so the hardest negatives dominate
+
+batch:
+  p_designs: 32                       # PK sampling: P designs ...
+  k_views: 4                          # ... x K views, giving K-1 = 3 positives per anchor
+  # With this probability, a group of designs in the batch shares ONE palette, so colour is
+  # useless inside that group and only the motif separates them.
+  same_palette_prob: 0.3
+  same_palette_group_size: 4
+
+augment:
+  # Wider than the 0.70 to 1.00 used for eval queries. The corpus shows two images of one
+  # saree can be different regions of it, so training on aggressive crops matches reality.
+  train_crop_scale: [0.5, 1.0]
+  method: kmeans_palette_swap         # TRAIN bank only; eval uses a held-out algorithm
+  # With this probability a view uses the tonal rule (lightness changes, dark/light order may
+  # invert) instead of the luminance-preserving swap. Without it the model would never see a
+  # lightness change in training, yet tonal queries are half of the selection metric.
+  tonal_prob: 0.5
+  tonal_invert_prob: 0.5
+
+optim:
+  lr_head: 1.0e-3                     # fresh head must move
+  lr_backbone: 2.0e-5                 # pretrained blocks should only adapt
+  weight_decay: 0.05
+  warmup_frac: 0.05
+  grad_clip: 1.0
+  amp: true
+
+budget:
+  max_minutes: 40
+  max_steps: 3000
+
+eval:
+  every_steps: 250
+  # Checkpoint selection uses the HELD-OUT recolour method (val split, lab_hue_chroma_remap,
+  # val palette bank), which is what the test set uses. The in-distribution diagnostic is
+  # logged for the generalisation gap and never used to select.
+  # Mean of held-out-recolour mAP and tonal mAP on val. Averaging stops selection from
+  # favouring a checkpoint that wins on the luminance-preserving queries, where grayscale is
+  # invariant by construction, while losing on the tonal ones.
+  select_metric: val_map_select
+  batch_size: 64
+
+loader:
+  num_workers: 2
+
+output:
+  dir: outputs/run
+  log_csv: outputs/train_log.csv
+  checkpoint: outputs/run/best.pt

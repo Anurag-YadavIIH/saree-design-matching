@@ -1,0 +1,209 @@
+# Data layer configuration. See docs/DATA_CONTRACT.md for the schema this produces.
+#
+# Everything about how raw files map to labels lives here. Changing a labeling rule, a
+# threshold, a split fraction or a palette bank must be an edit to this file, never to code.
+
+schema_version: 3
+seed: 42
+
+paths:
+  data_root: data                     # all image paths in the manifest are relative to this
+  synthetic_dir: data/synthetic       # generated recolors; under data/ because they derive
+                                      # from the proprietary corpus and inherit its terms
+  manifest: outputs/manifest.csv
+  label_map: outputs/label_map.json
+  summary: outputs/data_summary.md
+  unmatched: outputs/unmatched.csv    # files no adapter rule claimed; never silently dropped
+  review: outputs/review_flags.csv    # anything needing a human look
+
+# ---------------------------------------------------------------------------- sources
+# Adding a source means one new adapter file plus one block here.
+
+sources:
+  deeplure_drive:
+    enabled: true
+    adapter: deeplure                 # registry key, see src/data/adapters/__init__.py
+    root: data/Google_drive_data
+    glob: "**/*.jpg"
+    design_prefix: drive
+    label_confidence: high            # identity is pixel-verified, see DATA_CONTRACT.md
+    craft_family: ""                  # this corpus carries no craft labels
+    # The `h_` prefix was investigated (outputs/hprefix_probe.md): it encodes no pairing
+    # information, so it is stripped for readability only and never used as a label.
+    strip_filename_prefixes: ["h_"]
+
+  kaggle_fabric:
+    enabled: true
+    adapter: kaggle
+    root: data/Kaggle_data
+    glob: "**/*.jpg"
+    design_prefix: kaggle
+    label_confidence: medium          # identity rests on clustering, not ground truth
+    # Roboflow export names files <original stem>_<ext>.rf.<32 hex>.jpg. The craft family is
+    # the second path component: <split>/<CraftFamily>/<file>.
+    craft_family_from_path_index: 1
+    # The vendor's own train/valid/test split is DISCARDED: 88 duplicate clusters straddle
+    # its boundaries. We re-split from scratch.
+    ignore_vendor_split_dirs: ["train", "valid", "test"]
+    roboflow_filename_re: '^(?P<stem>.*?)_(?:jpg|jpeg|png)\.rf\.[0-9a-f]+$'
+    # Stems so generic that unrelated images share them. Never usable as an identity key.
+    generic_stem_re: '^(?:image|images|img|download|untitled|photo)[-_ ]?\d*$'
+
+# ------------------------------------------------------------------- duplicate detection
+# Two stages. pHash is a cheap prefilter and the authority for same-framing duplicates
+# (the Roboflow noise triplets). It CANNOT see a re-cropped view of the same design: a
+# translation offset leaves local pixels intact but changes the DCT completely, which was
+# measured at pHash distance 28 to 38 for pairs agreeing at NCC 0.98. So geometric
+# verification decides design identity.
+
+dedup:
+  # Candidate generation for the expensive geometric stage. Zero-shot DINOv2 cosine gives
+  # each representative its nearest neighbours; only those pairs are pixel-verified. Falls
+  # back to translation-invariant histogram descriptors if torch is unavailable. A weaker
+  # prefilter costs recall only: every proposed pair is still verified, so precision holds.
+  use_dinov2_prefilter: true
+  prefilter_topk: 10
+  phash:
+    hamming_threshold: 4              # middle of the 4 to 8 plateau in identity_probe.md
+    bucket_slice_width: 4             # hash-prefix bucketing, to avoid an all-pairs scan
+  geometric:
+    # Time box on pixel verification. Candidates are checked in descending prefilter
+    # similarity, so if the budget runs out the most promising pairs are already resolved.
+    # Running out can only MISS a merge, never invent one, so splits stay safe.
+    time_budget_s: 1200
+    enabled: true
+    max_side: 800                     # working resolution for keypoint detection
+    orb_features: 1500
+    lowe_ratio: 0.75
+    ransac_px: 5.0
+    min_inliers: 25                   # below this, no homography is worth verifying
+    max_det_ratio: [0.25, 4.0]        # reject wild distortions; a real view is near-similarity
+    min_overlap: 0.10                 # NCC is meaningless over a tiny overlap
+    min_region_std: 8.0               # both overlap regions must carry texture, not flat wall
+    ncc_same_design: 0.90             # pixel agreement required to merge into one design
+  # Hue is compared INSIDE the aligned overlap only. Whole-image comparison conflates a
+  # recolor with a different crop, which produced 8 false colourway pairs on the first pass.
+  hue:
+    bins: 18
+    min_saturation: 40
+    min_value: 30
+    min_pixels: 500
+    same_palette_max: 0.15
+    different_palette_min: 0.45
+  # A duplicate cluster spanning different craft families is contradictory and gets flagged
+  # for review rather than silently merged.
+  flag_cross_family_clusters: true
+
+representative:
+  # Kaggle noise variants: prefer the least corrupted copy, so the canonical image is the
+  # cleanest available. Noise is counted as pixels deviating sharply from a 3x3 median,
+  # which is exactly what salt-and-pepper augmentation introduces.
+  rule: fewest_impulse_noise
+  impulse_threshold: 40               # absolute deviation from the 3x3 median, 0 to 255
+  tie_break: sorted_path
+
+# -------------------------------------------------------------------------------- split
+# By design_id, never by image. Grouped by dup_group so duplicates cannot cross. Stratified
+# by source and craft family so each split reflects the corpus composition.
+
+split:
+  val_frac: 0.15
+  test_frac: 0.20
+  stratify_by: [source, craft_family]
+  # The Drive corpus is the client's target domain, so it carries a higher test fraction.
+  # 0.40 of 95 Drive designs gives roughly 38 test designs.
+  per_source_test_frac:
+    deeplure_drive: 0.40
+  # All 27 real multi-view Drive designs are forced into test: they are the only real
+  # positive pairs in the corpus and are worth more as evidence than as training signal.
+  force_multiview_to_test: true
+  # Designs with a single image and no synthetic queries cannot form a gallery/query pair.
+  # They are still useful as training identities.
+  singletons_to_train_only: false     # false, because synthetic queries make them evaluable
+
+  # Safety net for same-design pairs that geometric verification CANNOT see, because they
+  # share no pixels: two separate photographs of one saree. The post-split leakage audit
+  # found exactly this (9557ER2 vs 9557ER3; dsc00117 vs dsc00106, sequential frames from one
+  # camera session).
+  #
+  # Deliberately a SPLIT CONSTRAINT and not a design merge. Merging would assert the two are
+  # the same design, which we have not proven. Constraining only forces them onto the same
+  # side of the split: if they are the same design there is no leak, and if they are not we
+  # lose a little split flexibility. Asymmetric risk, so we take the cautious option.
+  extra_grouping:
+    enabled: true
+    cosine_min: 0.93                  # embedding similarity required
+    min_shared_prefix: 5              # characters of shared filename prefix
+    # Generic stems collide across unrelated images, so a shared prefix among them means
+    # nothing. See DECISIONS.md D-04.
+    skip_generic_stems: true
+
+# --------------------------------------------------------------------------- evaluation
+eval:
+  gallery_rule: first_by_sorted_path  # which real view becomes gallery for a multi-view design
+  queries_per_design: 5
+  real_pairs:
+    enabled: true
+    # Query kinds built for the 27 real multi-view designs. See DATA_CONTRACT.md.
+    kinds: [real_view, real_view_recolored, synthetic_recolor]
+  stress_b:
+    tier1_same_palette: true
+    tier2_same_palette_same_family: true
+  bootstrap:
+    resamples: 1000
+    confidence: 0.95
+    unit: design                      # queries sharing a parent are correlated
+
+# ------------------------------------------------------------------------- recoloring
+# The held-out distribution is the whole point: eval uses palettes AND an algorithm never
+# seen in training, so a high score cannot come from inverting our own generator.
+
+recolor:
+  palette_bank:
+    size: 40
+    k_colors: 6                       # colours per palette
+    split: {train: 24, val: 8, test: 8}   # mutually disjoint
+  methods:
+    train: kmeans_palette_swap
+    val: lab_hue_chroma_remap
+    test: lab_hue_chroma_remap
+  # Applies the TRAINING method to val designs purely to report the in-distribution versus
+  # held-out gap. Never used for checkpoint selection.
+  val_in_distribution_diagnostic:
+    enabled: true
+    method: kmeans_palette_swap
+    bank: train
+    seed: 1234
+  # Tonal generator: changes LIGHTNESS as well as chroma, and inverts the dark/light order of
+  # colour clusters with probability invert_prob. Exists because the two generators above both
+  # restore the original L channel, which makes grayscale input invariant to them by
+  # construction. Eval-only rows here; training applies the same rule with the TRAIN bank
+  # (see configs/train.yaml), so for this generator only the PALETTES are held out.
+  tonal:
+    enabled: true
+    method: tonal_remap
+    queries_per_design: 5
+    invert_prob: 0.5
+  materialise:                        # write to disk, versus generate on the fly
+    train: false
+    val: true
+    test: true
+
+# Realistic geometry, so identity cannot be solved by pixel alignment. No flips: many saree
+# motifs are directional, and a mirrored motif is arguably a different design.
+geometry:
+  enabled: true
+  crop_scale: [0.70, 1.00]
+  rotation_deg: 15
+  perspective: 0.05
+  scale: [0.8, 1.2]
+  blur_sigma: [0.0, 1.0]
+  jpeg_quality: [60, 90]
+  hflip: false
+  vflip: false
+
+loader:
+  img_size: 224
+  # RGBA, P and L are converted to RGB in ONE place (src/data/dataset.py) so a silently
+  # composited alpha channel cannot become an irreproducible bug.
+  force_rgb: true
