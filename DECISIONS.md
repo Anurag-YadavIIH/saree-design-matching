@@ -454,8 +454,13 @@ Recorded before either Kaggle run, so the bar cannot be moved to fit the result.
      one of: tonal Rank-1, TAR@FAR=1e-3 (main queries), `real_view_recolored` Rank-1.
   2. The trained model's main (`synthetic_recolor`) Rank-1 does **not** fall below the lower
      bound of gray zero-shot's CI.
-- **If it fails:** report that plainly, and ship **gray zero-shot DINOv2 plus a projection**
-  as the recommended model. The negative result stays in the README.
+- **If it fails:** report that plainly, and ship **gray zero-shot DINOv2** (frozen, grayscale
+  input, raw 384-d CLS embedding) as the recommended model. The negative result stays in the
+  README.
+- **Wording correction (logged before any checkpoint was scored):** this entry first said "gray
+  zero-shot DINOv2 plus a projection". No projection was ever built or evaluated; the bars are
+  set by the raw 384-d gray DINOv2 embedding, so that measured baseline is exactly what the
+  fallback ships. The rule itself is unchanged.
 - **Runs:** (a) RGB input, (b) gray input, identical config otherwise, about 20 minutes each.
   Checkpoint selection: mean of val mAP on held-out recolour and tonal queries (never the
   in-distribution diagnostic).
@@ -619,6 +624,11 @@ Recorded before either Kaggle run, so the bar cannot be moved to fit the result.
   manifest, which is not the one the checkpoints were trained on. The rule is unchanged;
   the bars are recomputed on the Kaggle rebuild by `scripts/judge_d34.py bars`, before
   any checkpoint is scored, and recorded here once known.
+- **FINAL bars (Kaggle build, 95 test designs after exclusion; `bars.json`, written before any
+  checkpoint was scored):** gray zero-shot main Rank-1 0.916 [0.874, 0.952]; main TAR@1e-3 0.589
+  [0.524, 0.653]; tonal Rank-1 0.642 [0.573, 0.705]; real_view_recolored Rank-1 0.804
+  [0.682, 0.907]. Success needs tonal Rank-1 > **0.705**, or main TAR > **0.653**, or
+  real_view_recolored > **0.907**; AND main Rank-1 >= **0.874**.
 - **Rule unchanged (D-34).** Only the numeric bars change: D-35's were computed on 120 test
   designs; the checkpoints are judged ONLY against bars from the 93-design post-exclusion set.
   Both were fixed before any checkpoint was evaluated.
@@ -690,17 +700,36 @@ Recorded before either Kaggle run, so the bar cannot be moved to fit the result.
 
 ---
 
-### D-46: Training was compute-limited: about 240 of 3,000 planned steps per run
-- **Evidence (Kaggle Version #1 log):** about 3.0 s per step (10 steps per ~30 s); loss 1.34 to
-  1.19 by step 200; with TRAIN_MINUTES = 12 each run reaches only about 240 steps against the
-  3,000 planned, roughly 8% of the intended optimisation.
+### D-46: Training was compute-limited: under 300 of 3,000 planned steps per run
+- **Evidence (Kaggle Version #1 log):** about 3.0 s per step (10 steps per ~30 s). The RGB run
+  completed **294 steps in 15.4 min** (3.1 s per step), about 10% of the 3,000 planned; the
+  earlier "about 240" was the projection for a 12 minute box. The gray run follows the same loss
+  trajectory (in progress at the time of writing).
+- **RGB run outcome:** loss 2.73 to 1.16; best val selection metric 0.9909 (held-out recolour mAP
+  0.9947, tonal mAP 0.9871, in-distribution mAP 0.9943, generalisation gap about 0).
+- **Validation is near-saturated.** With 76 val designs, mAP above 0.99 on every val query kind
+  leaves checkpoint selection almost no signal: most checkpoints would score alike. The reported
+  numbers are therefore the TEST results with their bootstrap CIs, not val. The training loss
+  tells the same story: SupCon's floor with 4 views is log(3) = 1.099, and the loss ended at
+  1.16, so the in-batch synthetic task was also close to solved.
+- **Two limits, both true.** (1) Compute was limited: about 10% of the planned steps. (2) The
+  objective was already near its floor: loss 1.16 against SupCon's minimum of log(3) = 1.099 for
+  4 views per design means the training task is nearly saturated, so more steps on the same
+  recolours would likely give limited gains. The larger lever is the gap between training
+  recolours and test conditions: more diverse generators (lightness, sheen, lighting, dye
+  bleed), and the real Kaggle colourway pairs used as training positives rather than only as an
+  evaluation set.
+- **Warning seen, harmless:** "lr_scheduler.step() before optimizer.step()". With AMP, GradScaler
+  skips the first optimizer step when the initial loss scale produces inf/NaN gradients (it then
+  lowers the scale), while the scheduler still stepped. Effect: the LR schedule is offset by one
+  step out of 294.
 - **Likely cause (inferred, not profiled):** the CPU data pipeline, not the GPU. Each step builds
   128 views (32 designs x 4), and each view is decoded, recoloured (k-means palette swap or
   tonal remap, both via LAB conversions), warped and JPEG re-encoded at the image's FULL
   resolution, only downscaled to 224 at the end. Drive images reach 1512 px, about 45x the
   pixels of 224 x 224, and the loader ran 2 workers on Kaggle's 4 vCPUs. A ViT-S/14 forward and
   backward pass on 128 images at 224 should take a fraction of a second on a T4.
-- **Consequence:** both checkpoints are undertrained. A FAIL on D-34 would partly reflect the
+- **Consequence:** both checkpoints are undertrained (about 10% of planned steps). A FAIL on D-34 would partly reflect the
   compute budget rather than the approach, and must be reported that way.
 - **Fix (not applied; the deadline came first):**
   1. Downscale each image to about 320 px BEFORE recolour and geometry; the cheapest, largest win.
@@ -708,3 +737,42 @@ Recorded before either Kaggle run, so the bar cannot be moved to fit the result.
   3. Move recolouring to the GPU: the cluster-map lookup and LAB arithmetic are tensor ops.
   4. More DataLoader workers (4 on Kaggle) with prefetching, and profile one step to confirm
      where the time goes before choosing among 1 to 3.
+
+---
+
+### D-47: Verdict under D-34: both fine-tuned checkpoints SUCCEED
+- **Test set (Kaggle build, fingerprint 24d15b8521fb29ec):** 120 test designs; 22 excluded by
+  audited links; 113 human-reviewed (91 kept); 7 unreviewed, of which 3 excluded by the cosine
+  rule and 4 kept; **95 final** (21 Drive, 74 Kaggle). Bars from D-43 (final).
+- **trained RGB (step 294): SUCCESS.**
+  - tonal Rank-1 0.943 [0.901, 0.977] vs bar 0.705: beats
+  - main TAR@1e-3 0.958 [0.933, 0.979] vs bar 0.653: beats
+  - real_view_recolored Rank-1 0.761 [0.578, 0.893] vs bar 0.907: does not beat
+  - guardrail main Rank-1 0.981 [0.954, 0.998] vs min 0.874: ok
+- **trained gray (step 284): SUCCESS.**
+  - tonal Rank-1 0.952 [0.918, 0.979] vs bar 0.705: beats
+  - main TAR@1e-3 0.962 [0.939, 0.983] vs bar 0.653: beats
+  - real_view_recolored Rank-1 0.783 [0.600, 0.915] vs bar 0.907: does not beat
+  - guardrail main Rank-1 0.989 [0.979, 0.998] vs min 0.874: ok
+- **Shipped:** trained gray. It leads RGB on every main metric with overlapping intervals; chosen
+  on test, which cannot change the verdict because both pass. The fine-tuned approach note
+  applies; the fallback note is not used.
+- **Against the model, without softening:**
+  - Real framing got WORSE: real_view Rank-1 0.717 (RGB) and 0.761 (gray) vs zero-shot gray
+    0.891 [0.800, 0.964]; real_view_recolored 0.761 and 0.783 vs 0.804. Overlapping CIs on 46
+    queries, but every trained point estimate is below zero-shot on both real-pair kinds.
+  - Real colourway TAR@1e-2: trained gray 0.909, trained RGB 0.788, zero-shot gray 1.000 (that
+    eval favours zero-shot gray by construction, D-40, and 10 of 33 pairs were trained as
+    negatives; still no evidence of a gain there).
+  - Tonal gains are partly in-distribution: same tonal rule in training, palettes held out (D-33).
+  - Drive only (21 designs): 0.981 [0.952, 1.000] vs 0.962 [0.895, 1.000]: no demonstrated gain
+    on the client domain alone.
+  - Undertrained (under 300 of 3,000 steps) and selected on a near-saturated val set (D-46).
+- **What the success does rest on:** main queries use a recolour ALGORITHM and palettes never
+  seen in training, and trained gray's main Rank-1 interval [0.979, 0.998] lies entirely above
+  zero-shot gray's [0.874, 0.952]; main TAR 0.962 vs 0.589 at the same frozen, val-chosen
+  threshold rule.
+- **Efficiency (T4):** 7.0 ms per image at batch 1, 755 images/s at batch 32 fp16, 299 MB peak.
+  FLOPs on the T4 run: 12.25 GFLOPs = 6.12 GMACs (torch 2.10); D-39's 11.03 came from torch 2.14
+  locally. Same model; the counter versions count attention differently, so the T4 figure is the
+  reported one.
