@@ -195,6 +195,14 @@ trained as negatives, so fine-tuned models are underestimated here.
 
 ## Results
 
+![Test Rank-1 on main and tonal queries with 95% CIs](docs/img/headline.png)
+
+*Test Rank-1 with 95% CIs on 95 unseen designs: fine-tuning lifts tonal queries, where every baseline drops.*
+
+![Stress test B ROC-AUC by tier](docs/img/stress.png)
+
+*Stress test B: the colour histogram falls below chance on same-palette impostors; the trained models stay near 1.0.*
+
 ### Verdict (D-34, applied mechanically by `scripts/judge_d34.py`)
 
 **Both fine-tuned checkpoints meet the pre-registered success criteria.**
