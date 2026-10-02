@@ -39,8 +39,9 @@ bars from the baselines, then scores the checkpoints against them (D-34, D-45).
 # must reproduce these exactly, or the test set is not the one the checkpoints were trained for.
 EXPECT = {"drive_designs": 96, "drive_multi": 27, "kaggle_designs": 411, "kaggle_dups": 412,
           "constraining_pairs": 2, "synthetic": 2030, "train_designs": 311}
+REPO_URL = "https://github.com/Anurag-YadavIIH/saree-design-matching"
 WORK = "/kaggle/working/saree-reid"
-SAFE = "/kaggle/working/ckpts"   # outside WORK, so the code copy below cannot delete it
+SAFE = "/kaggle/working/ckpts"   # outside WORK, so re-cloning cannot delete it
 """),
     md("## 1. Secure the checkpoints BEFORE anything is deleted"),
     code("""
@@ -48,8 +49,12 @@ import os, shutil, subprocess, sys, re
 from pathlib import Path
 
 def find_ckpt(run):
-    hits = [p for root in ("/kaggle/working", "/kaggle/input")
-            for p in Path(root).rglob(f"{run}/best.pt") if SAFE not in str(p)]
+    # The training notebook's output, attached via Add Input > Your Work, lands somewhere under
+    # /kaggle/input; the exact nesting depends on the notebook slug, so search everywhere.
+    hits = sorted(p for root in ("/kaggle/input", "/kaggle/working")
+                  for p in Path(root).rglob(f"{run}/best.pt") if SAFE not in str(p))
+    if len(hits) > 1:
+        print(f"note: {len(hits)} candidates for {run}; using the first")
     return hits[0] if hits else None
 
 for run in ("run_rgb", "run_gray"):
@@ -57,38 +62,51 @@ for run in ("run_rgb", "run_gray"):
     if dst.exists():
         print("already safe:", dst); continue
     src = find_ckpt(run)
-    assert src is not None, (f"no {run}/best.pt in /kaggle/working or /kaggle/input. "
-                             "Attach the downloaded checkpoints as a private dataset.")
+    assert src is not None, (f"no {run}/best.pt under /kaggle/input: attach the training "
+                             "notebook via Add Input > Your Work")
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
     print(f"copied {src} -> {dst}")
 """),
-    md("## 2. Code and data"),
-    code("""
-def find_dir(name=None, must_contain=None):
-    # First directory under /kaggle/input called `name`, or containing all of `must_contain`.
-    for p in sorted(Path("/kaggle/input").rglob("*")):
-        if not p.is_dir():
-            continue
-        if must_contain and all((p / m).exists() for m in must_contain):
-            return p
-        if name and p.name == name:
-            return p
-    raise FileNotFoundError(f"no {name or must_contain} under /kaggle/input")
+    md("""
+## 2. Code from GitHub, data COPIED into data/
 
-code_src = find_dir(must_contain=["src", "configs", "scripts"])
+The data is copied, not symlinked, exactly as in the training run. The adapters compute each
+path with `Path.resolve()`, which follows a symlink out of `data/` into `/kaggle/input`, so a
+symlinked folder breaks the relative-path step. Copies make the build identical to training.
+"""),
+    code("""
+def find_data(name, min_images=100):
+    # A folder called `name` under /kaggle/input that really holds images, so an empty or
+    # partial folder (for example inside a notebook output) can never be picked by mistake.
+    for p in sorted(Path("/kaggle/input").rglob(name)):
+        if p.is_dir() and sum(1 for _ in p.rglob("*.jpg")) >= min_images:
+            return p
+    raise FileNotFoundError(f"no '{name}' folder with >= {min_images} images under /kaggle/input")
+
 if Path(WORK).exists():
     shutil.rmtree(WORK)
-shutil.copytree(code_src, WORK, ignore=shutil.ignore_patterns("data", "outputs", ".venv"))
+subprocess.run(["git", "clone", "--depth", "1", REPO_URL, WORK], check=True)
 os.chdir(WORK)
-assert Path("scripts/judge_d34.py").exists(), "attached code is the OLD version: upload the new zip"
-data = Path(WORK) / "data"; data.mkdir(exist_ok=True)
+print("code commit:", subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                                     capture_output=True, text=True).stdout.strip())
+assert Path("scripts/judge_d34.py").exists(), "cloned code is too old: push the eval changes first"
+
+data = Path(WORK) / "data"
+data.mkdir(exist_ok=True)
 for name in ("Google_drive_data", "Kaggle_data"):
-    (data / name).symlink_to(find_dir(name), target_is_directory=True)
+    dst = data / name
+    if dst.is_symlink():
+        os.unlink(dst)                       # never rmtree a link: that would walk the target
+    if not dst.exists():
+        shutil.copytree(find_data(name), dst)
+    # Counts only: printing folder or file names here would put Drive paths in the notebook.
+    print(f"{name}: {sum(1 for _ in dst.rglob('*.jpg'))} images copied")
+
 !pip install -q imagehash
 import torch
 assert torch.cuda.is_available() and "T4" in torch.cuda.get_device_name(0)
-print("code:", code_src, "| GPU:", torch.cuda.get_device_name(0))
+print("GPU:", torch.cuda.get_device_name(0))
 """),
     md("""
 ## 3. Rebuild the manifest and PROVE it is the training manifest
