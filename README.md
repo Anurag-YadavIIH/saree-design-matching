@@ -24,10 +24,12 @@ The core requirement has two halves, measured separately:
 
 ### What the data actually contains
 
-Nothing in either source labels design identity, and **there are zero real colourway pairs
-anywhere in the corpus**. Every colour-varying positive used in training and evaluation is
-synthetic. That is the single most important fact about this submission, and it is verified
-rather than assumed (see `DECISIONS.md` D-06).
+Nothing in either source labels design identity. **The Drive corpus has no real colourway
+pairs.** The Kaggle catalogue does: at least 33 separately photographed same-print,
+different-colour pairs, found late by mining (D-40, D-42) after two earlier probes missed them
+because they assumed a same-design pair shares pixels or layout. Training and the main eval
+protocol use synthetic colour positives; the real Kaggle pairs give a separate, smaller
+verification eval.
 
 | Source | Files | Designs | Notes |
 |---|---|---|---|
@@ -96,7 +98,44 @@ to the true task this corpus permits.
 
 ## Results
 
-To be filled after the Kaggle run.
+### Baselines, before and after post-hoc leakage exclusion
+
+Gray zero-shot DINOv2 is the bar to beat. Checkpoints are judged ONLY against the
+post-exclusion bars (`DECISIONS.md` D-34 for the rule, D-43 for the numbers). 95% CIs from 1000
+bootstrap resamples over designs.
+
+| method | test set | main Rank-1 | main TAR@1e-3 | tonal Rank-1 | real_view_recolored Rank-1 |
+|---|---|---|---|---|---|
+| grayscale pHash | pre, 120 designs | 0.448 [0.402, 0.492] | 0.353 [0.312, 0.397] | 0.190 [0.157, 0.222] | 0.028 [0.000, 0.066] |
+| grayscale pHash | post, 93 designs | 0.454 [0.404, 0.503] | 0.342 [0.299, 0.391] | 0.209 [0.176, 0.243] | 0.023 [0.000, 0.073] |
+| RGB colour histogram | pre, 120 | 0.090 [0.063, 0.118] | 0.053 [0.032, 0.077] | 0.010 [0.002, 0.022] | 0.127 [0.045, 0.203] |
+| RGB colour histogram | post, 93 | 0.099 [0.067, 0.131] | 0.052 [0.030, 0.073] | 0.013 [0.002, 0.030] | 0.159 [0.062, 0.270] |
+| DINOv2 zero-shot RGB | pre, 120 | 0.892 [0.853, 0.925] | 0.637 [0.583, 0.690] | 0.573 [0.517, 0.632] | 0.746 [0.623, 0.855] |
+| DINOv2 zero-shot RGB | post, 93 | 0.901 [0.862, 0.940] | 0.583 [0.518, 0.647] | 0.559 [0.495, 0.628] | 0.750 [0.579, 0.877] |
+| DINOv2 zero-shot gray | pre, 120 | 0.913 [0.878, 0.943] | 0.667 [0.618, 0.718] | 0.638 [0.583, 0.692] | 0.761 [0.657, 0.855] |
+| **DINOv2 zero-shot gray** | **post, 93** | **0.912 [0.873, 0.948]** | **0.609 [0.546, 0.673]** | **0.645 [0.581, 0.714]** | **0.864 [0.744, 0.944]** |
+
+Post-exclusion success bars: tonal Rank-1 > 0.714, or main TAR > 0.673, or
+real_view_recolored > 0.944; and main Rank-1 >= 0.873. The real-pairs set shrank to 15 designs
+after exclusion, which makes its bar close to unreachable.
+
+### Real colourway verification (Kaggle, 33 judged pairs)
+
+| method | ROC-AUC | TAR@FAR=1e-2 |
+|---|---|---|
+| grayscale pHash | 0.686 [0.562, 0.820] | 0.273 [0.121, 0.424] |
+| RGB colour histogram | 0.597 [0.473, 0.710] | 0.030 [0.000, 0.091] |
+| DINOv2 zero-shot RGB | 0.998 [0.996, 0.999] | 0.939 [0.848, 1.000] |
+| DINOv2 zero-shot gray | 0.999 [0.999, 1.000] | 1.000 [1.000, 1.000] |
+
+**Read with care.** Pairs were mined from gray zero-shot DINOv2's own nearest neighbours, so
+that model scores them highly by construction; this eval cannot rank it against correlated
+models. It does show pHash and colour histograms failing on real colourways. 10 of 33 pairs
+were trained as negatives, so fine-tuned models are underestimated here (D-40).
+
+### Trained models
+
+To be filled from the Kaggle checkpoints, judged against the post-exclusion bars.
 
 ## Efficiency
 
@@ -158,7 +197,8 @@ asymmetry.
 
 ## Limitations and extensions
 
-* **No real colourway pairs.** Every colour positive is synthetic. Holding out both the palette
+* **Few real colourway pairs.** None in Drive; 33 judged in Kaggle (top 60 of 788 mined
+  candidates reviewed). Training colour positives are synthetic. Holding out both the palette
   bank and the recolour algorithm guards against the model simply learning to invert our own
   generator, but it cannot fully substitute for real dyed variants of one design. The single
   most valuable addition would be the client's catalogue colourway groupings.
@@ -167,6 +207,12 @@ asymmetry.
   keypoints, so no content-based method can link them. Some same-design leakage across splits
   may therefore remain undetected. The leakage audit bounds this risk but cannot eliminate it.
 * **Leakage audit outcome.** Of the 20 test designs most similar to a train design, none is pixel-verified as the same saree; 5 have very high similarity but cannot be verified by content and were reviewed by eye. Any judged to be the same saree are excluded post hoc from test (`configs/eval_exclude.yaml`), and the results state how many.
+* **Training labels contain undetected duplicates.** Real colourway twins in Kaggle and
+  separate photographs of one saree in Drive carry different design_ids, so SupCon saw some
+  same-design pairs as NEGATIVES. This works directly against the colour-invariance objective
+  and likely understates what the method could achieve with clean labels.
+* **Post-hoc test exclusions.** 27 test designs (19 of 38 Drive, 8 Kaggle) were judged to
+  leak and are excluded from every reported test number (`configs/eval_exclude.yaml`).
 * **Small test set.** 119 test designs, 38 of them from Drive, so confidence intervals are
   wide. They are reported rather than hidden.
 * **Source asymmetry.** Kaggle images are stretched and noisy; Drive images are not.

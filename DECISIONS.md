@@ -549,3 +549,83 @@ Recorded before either Kaggle run, so the bar cannot be moved to fit the result.
   Linear(384, 512) probe (196,608 multiply-adds, reported as 393,216) and reads the token count
   from `prepare_tokens_with_masks`. Trap avoided: `patch_embed.num_patches` reports 1369, the
   37x37 grid of the 518 px pretraining size; at 224 the position embeddings are interpolated.
+
+---
+
+### D-40: Real colourway verification on the Kaggle catalogue
+- **Method:** `scripts/mine_colourway_pairs.py` embeds all 412 Kaggle representatives with
+  zero-shot DINOv2 on GRAYSCALE input, takes each image's top-3 neighbours from a different
+  design, and keeps pairs whose hue histograms differ strongly (L1 >= 0.6): 788 candidates.
+  The top 60 by similarity were judged on contact sheets (Kaggle images only, public MIT
+  data): **33 accepted** as same print in a different colourway, 27 rejected with reasons in
+  `outputs/real_colourway_pairs.csv`. Acceptance fell 70% -> 60% -> 35% across the three
+  sheets, so review stopped at 60; 727 candidates are unreviewed.
+- **Most common rejection:** different Ikat motifs photographed on the same mannequin. The
+  similarity was the photo setup, not the print: a staging confound worth naming.
+- **Eval:** verification, positives = the 33 pairs, negatives = 21,120 same-craft-family
+  pairs not linked through accepted pairs and not among unreviewed candidates. ROC-AUC and
+  TAR at FAR = 1e-2 (1e-3 would rest on a handful of negatives), with bootstrap CIs.
+- **Baselines:** pHash AUC 0.686 [0.562, 0.820], TAR 0.273; colour histogram AUC 0.597, TAR
+  0.030; DINOv2 RGB AUC 0.998, TAR 0.939; DINOv2 gray AUC 0.999, TAR 1.000.
+- **Caveats, stated with the numbers:**
+  1. **Selection bias, and it is large.** Positives were mined as gray zero-shot DINOv2's own
+     top-3 neighbours, so that model scores them highly by construction. Its perfect TAR is
+     not evidence; this eval cannot rank gray zero-shot against anything correlated with it.
+     It IS informative that pHash and the colour histogram fail on real colourways.
+  2. 10 of 33 pairs have both sides in train with different design_ids, so SupCon was trained
+     to push them apart: the fine-tuned models are underestimated here.
+  3. 21 of 33 pairs straddle splits: one colourway in train, another in val or test.
+  4. TAR threshold is set on the same negatives; there is no separate validation set.
+- **What I would do with more time:** mine with an independent signal (e.g. ORB on
+  edge maps, or a different backbone) so the eval does not favour the mining model.
+
+---
+
+### D-41: Drive same-saree leakage: 19 of 38 Drive test designs excluded post hoc
+- **Finding:** Anurag's visual audit judged 19 of the 38 Drive test designs to be separate
+  photographs of a saree that also appears in train. Plus 8 Kaggle test designs with a real
+  colourway twin in train. 27 test designs in `configs/eval_exclude.yaml`.
+- **Cause:** separate photographs of one saree share no pixels, so the geometric identity
+  check (which only links overlapping crops) cannot connect them, and the leakage safety net
+  needs a shared distinctive filename, which Drive's opaque numeric names never provide. My
+  pixel-level re-check of the top 20 audit pairs verified none (best NCC 0.853, rotated 90
+  degrees). Human judgement found what content matching could not.
+- **Consequence:** half the Drive test set was leaked. Excluding it leaves 19 Drive test
+  designs, so Drive-only confidence intervals are roughly twice as wide.
+- **Fix chosen:** post-hoc exclusion from test, no retrain (D-38). The model has seen the
+  train side, which was never a test target.
+- **What I would do with more time:** re-split with these same-saree links as split
+  constraints and retrain, so the full Drive test set is usable.
+
+---
+
+### D-42: Real colourway pairs DO exist in Kaggle; D-06 is superseded for that source
+- **Correction:** D-06 concluded zero real colourway pairs in the corpus. That holds for the
+  Drive corpus. It is wrong for Kaggle: at least 33 exist (D-40).
+- **Why the earlier probe missed them:** it required LOW grayscale pHash distance before
+  checking hue. A real colourway in this catalogue is a separately photographed product shot,
+  often a swirl or drape, so its pHash distance is high even when the print is identical. The
+  filter discarded every true pair before hue was examined. The later geometric probe had the
+  same blind spot for a different reason: it only links images that share pixels.
+- **Lesson:** both of my "no pairs" conclusions inherited the assumption that a same-design
+  pair shares pixels or layout. Re-photography breaks that assumption.
+- **Consequence for training:** these pairs carry different design_ids, so SupCon treated them
+  as negatives. The training labels contain undetected duplicates of the most valuable kind.
+
+---
+
+### D-43: Success bars re-derived AFTER post-hoc exclusion (supersedes the numbers in D-35)
+- **Rule unchanged (D-34).** Only the numeric bars change: D-35's were computed on 120 test
+  designs; the checkpoints are judged ONLY against bars from the 93-design post-exclusion set.
+  Both were fixed before any checkpoint was evaluated.
+- **Post-exclusion gray zero-shot (93 designs, 1018 queries):** main Rank-1 0.912
+  [0.873, 0.948]; main TAR@1e-3 0.609 [0.546, 0.673]; tonal Rank-1 0.645 [0.581, 0.714];
+  real_view_recolored Rank-1 0.864 [0.744, 0.944] on 15 designs, 44 queries.
+- **Bars.** Success needs at least one of: tonal Rank-1 > **0.714**; main TAR@FAR=1e-3 >
+  **0.673**; real_view_recolored Rank-1 > **0.944**. AND main Rank-1 >= **0.873**.
+- **Reading the change:**
+  - 13 of the 28 real multi-view designs were among the excluded leaks, leaving 15. Gray
+    zero-shot rose to 0.864 there and the 0.944 bar is near-unreachable, so in practice the
+    test rests on tonal Rank-1 or main TAR.
+  - Gray main TAR fell 0.667 -> 0.609 after exclusion: the leaked designs were easy cases with
+    a near-twin in train. Mild evidence the exclusions removed real inflation.
