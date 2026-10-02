@@ -67,23 +67,38 @@ def auc_fn(pos, neg):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--pairs", default="outputs/real_colourway_pairs.csv")
-    ap.add_argument("--candidates", default="outputs/colourway_candidates.csv")
+    ap.add_argument("--pairs", default="configs/real_colourway_pairs.csv",
+                    help="every mined candidate with its decision, keyed by image_id")
     ap.add_argument("--checkpoints", nargs="*",
                     default=["outputs/run_rgb/best.pt", "outputs/run_gray/best.pt"])
     ap.add_argument("--out", default="outputs/results_colourway")
     args = ap.parse_args()
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
+    # Pairs are keyed by image_id, a stable hash of the path, and resolved to designs in THIS
+    # manifest. Design ids are renumbered across machines (D-45), so ids would point at the
+    # wrong designs; image_ids never change.
     pairs = pd.read_csv(args.pairs)
-    acc = pairs[pairs.decision == "accept"]
-    reviewed = set(zip(pairs.design_a, pairs.design_b))
-    unreviewed = {(a, b) for a, b in zip(*pd.read_csv(args.candidates)[["design_a", "design_b"]]
-                                          .values.T) if (a, b) not in reviewed}
-
+    real = load_manifest(source="kaggle_fabric", include_synthetic=False)
+    design_of = dict(zip(real.image_id, real.design_id))
+    split_of = dict(zip(real.design_id, real.split))
     reps = load_manifest(source="kaggle_fabric", include_synthetic=False,
                          representatives_only=True).reset_index(drop=True)
     idx = {d: i for i, d in enumerate(reps.design_id)}
+
+    def designs(r):
+        return design_of[r.image_id_a], design_of[r.image_id_b]
+
+    acc_pairs, merged = [], 0
+    for r in pairs[pairs.decision == "accept"].itertuples():
+        a, b = designs(r)
+        if a == b:
+            merged += 1          # this build already treats them as one design
+            continue
+        acc_pairs.append((a, b))
+    unreviewed = {tuple(sorted(designs(r))) for r in pairs[pairs.decision == "unreviewed"].itertuples()}
+    if merged:
+        print(f"[colourway] {merged} accepted pair(s) are one design in this manifest; skipped")
 
     # Connected components of accepted pairs: never score two members of one as impostors.
     parent = list(range(len(reps)))
@@ -93,10 +108,11 @@ def main() -> int:
             parent[x] = parent[parent[x]]
             x = parent[x]
         return x
-    for a, b in zip(acc.design_a, acc.design_b):
+    for a, b in acc_pairs:
         parent[find(idx[a])] = find(idx[b])
 
-    pos = [(idx[a], idx[b]) for a, b in zip(acc.design_a, acc.design_b)]
+    pos = [(idx[a], idx[b]) for a, b in acc_pairs]
+    both_train = sum(1 for a, b in acc_pairs if split_of[a] == "train" and split_of[b] == "train")
     fam = reps.craft_family.to_numpy()
     neg = []
     for i in range(len(reps)):
@@ -108,7 +124,6 @@ def main() -> int:
                 continue
             neg.append((i, j))
     pos, neg = np.array(pos), np.array(neg)
-    both_train = int(((acc.split_a == "train") & (acc.split_b == "train")).sum())
     print(f"[colourway] {len(pos)} positive pairs ({both_train} with both sides in train), "
           f"{len(neg):,} same-family negatives, {len(unreviewed)} unreviewed candidates excluded")
 
@@ -158,7 +173,7 @@ def main() -> int:
            f"- {both_train} of {len(pos)} pairs had both sides in train with different design_ids, "
            "so SupCon was trained to push them APART: the fine-tuned models are underestimated.",
            "- The TAR threshold is set on these same negatives; there is no separate validation set.",
-           f"- Only the top 60 of {len(pairs) + len(unreviewed)} mined candidates were reviewed."]
+           f"- Only {int((pairs.decision != 'unreviewed').sum())} of {len(pairs)} mined candidates were reviewed."]
     Path(args.out).with_suffix(".md").write_text("\n".join(md) + "\n", encoding="utf-8")
     Path(args.out).with_suffix(".json").write_text(json.dumps(results, indent=2), encoding="utf-8")
     print(f"[colourway] wrote {args.out}.md")

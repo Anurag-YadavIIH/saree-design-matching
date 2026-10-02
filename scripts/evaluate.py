@@ -127,6 +127,65 @@ def tar_with_ci(q_emb, q_designs, g_emb, g_designs, thr, n_boot):
     return float(hit.mean()), ci["tar"]
 
 
+def resolve_exclusions(path: Path, data_config: str) -> tuple[list[str], str]:
+    """Turn the audit's image_id LINKS into test design_ids for the manifest being evaluated.
+
+    Design ids are renumbered whenever a borderline geometric match flips between machines, and
+    the split can reshuffle with them (D-45). So the audit is stored as links between two
+    images, keyed by image_id (a stable hash of the path), and resolved here:
+
+      one side in TEST, the other in TRAIN  -> exclude the test-side design (a real leak)
+      both in test, or partner in val       -> not a train leak; kept, and logged
+      neither side in test                  -> nothing to do
+
+    Also reports how many of the current test designs the human audit actually reviewed, since
+    a different split can put never-audited designs into test.
+    """
+    if not path.exists():
+        return [], ""
+    cfg = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if cfg.get("exclude_test_designs"):
+        raise SystemExit(f"{path} is the old design_id-keyed format, which breaks on renumbering; "
+                         "regenerate it with scripts/make_exclusion_links.py")
+    links = cfg.get("links") or []
+    real = load_manifest(include_synthetic=False, config_path=data_config)
+    by_id = real.set_index("image_id")
+    missing = [l for l in links for k in ("test_image_id", "other_image_id")
+               if l[k] not in by_id.index]
+    if missing:
+        raise SystemExit(f"{len(missing)} link image_id(s) not in this manifest; refusing to guess")
+
+    excluded: list[str] = []
+    print("[eval] exclusion links resolved against this manifest:")
+    print(f"       {'audit id':14s} {'kind':26s} {'test-side design (split)':30s} "
+          f"{'partner design (split)':30s} action")
+    for l in links:
+        a, b = by_id.loc[l["test_image_id"]], by_id.loc[l["other_image_id"]]
+        sa, sb = a["split"], b["split"]
+        if sa == "test" and sb == "train":
+            action, target = "EXCLUDE test side", a["design_id"]
+        elif sb == "test" and sa == "train":
+            action, target = "EXCLUDE partner (now in test)", b["design_id"]
+        elif a["design_id"] == b["design_id"]:
+            action, target = "same design now; no leak", None
+        elif "test" in (sa, sb):
+            action, target = f"kept: partner in {sb if sa == 'test' else sa}, not train", None
+        else:
+            action, target = "no test side", None
+        if target and target not in excluded:
+            excluded.append(target)
+        print(f"       {l.get('audit_numbering', ''):14s} {l['kind']:26s} "
+              f"{a['design_id'] + ' (' + sa + ')':30s} {b['design_id'] + ' (' + sb + ')':30s} "
+              f"{action}")
+
+    audited = set(cfg.get("audited_test_image_ids") or [])
+    test_designs = set(real.loc[real["split"] == "test", "design_id"])
+    covered = set(real.loc[real["image_id"].isin(audited), "design_id"]) & test_designs
+    coverage = (f"{len(covered)} of {len(test_designs)} current test designs were in the audited "
+                f"test set; {len(test_designs - covered)} were never reviewed by a human")
+    return excluded, coverage
+
+
 def evaluate_method(name: str, embed_fn, test_g: pd.DataFrame, test_q: pd.DataFrame,
                     val_g: pd.DataFrame, val_q: pd.DataFrame, data_root: Path,
                     far: float, n_boot: int) -> dict:
@@ -326,24 +385,17 @@ def main() -> int:
     test_g = load_manifest(split="test", role="gallery", config_path=args.data_config)
     test_q = load_manifest(split="test", role="query", config_path=args.data_config)
 
-    # Post-hoc leakage exclusion: test designs a human judged to be the same saree as a train
-    # design (see configs/eval_exclude.yaml). Dropped from gallery AND queries, and reported.
-    excluded: list[str] = []
-    ex_path = Path(args.exclude)
-    if ex_path.exists():
-        excluded = list(yaml.safe_load(ex_path.read_text(encoding="utf-8"))
-                        .get("exclude_test_designs") or [])
+    # Post-hoc leakage exclusion, resolved against THIS manifest (configs/eval_exclude.yaml).
+    excluded, coverage = resolve_exclusions(Path(args.exclude), args.data_config)
     if excluded:
-        unknown = sorted(set(excluded) - set(test_g["design_id"]))
-        if unknown:
-            raise SystemExit(f"{ex_path} lists designs not in the test gallery: {unknown}")
         n_q = int(test_q["design_id"].isin(excluded).sum())
         test_g = test_g[~test_g["design_id"].isin(excluded)].reset_index(drop=True)
         test_q = test_q[~test_q["design_id"].isin(excluded)].reset_index(drop=True)
-        print(f"[eval] POST-HOC EXCLUSION: dropped {len(excluded)} test design(s) and "
-              f"{n_q} queries listed in {ex_path}: {excluded}")
+        print(f"[eval] POST-HOC EXCLUSION: dropped {len(excluded)} test design(s), {n_q} queries")
     else:
-        print(f"[eval] no post-hoc exclusions ({ex_path})")
+        print(f"[eval] no post-hoc exclusions ({args.exclude})")
+    if coverage:
+        print(f"[eval] audit coverage: {coverage}")
     val_g = load_manifest(split="val", role="gallery", config_path=args.data_config)
     val_q = load_manifest(split="val", role="query", config_path=args.data_config)
     print(f"[eval] test: {len(test_g)} gallery, {len(test_q)} queries | "

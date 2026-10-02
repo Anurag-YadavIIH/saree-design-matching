@@ -615,6 +615,10 @@ Recorded before either Kaggle run, so the bar cannot be moved to fit the result.
 ---
 
 ### D-43: Success bars re-derived AFTER post-hoc exclusion (supersedes the numbers in D-35)
+- **STATUS (D-45): the numbers below are SUPERSEDED.** They were computed on the LOCAL
+  manifest, which is not the one the checkpoints were trained on. The rule is unchanged;
+  the bars are recomputed on the Kaggle rebuild by `scripts/judge_d34.py bars`, before
+  any checkpoint is scored, and recorded here once known.
 - **Rule unchanged (D-34).** Only the numeric bars change: D-35's were computed on 120 test
   designs; the checkpoints are judged ONLY against bars from the 93-design post-exclusion set.
   Both were fixed before any checkpoint was evaluated.
@@ -629,3 +633,43 @@ Recorded before either Kaggle run, so the bar cannot be moved to fit the result.
     test rests on tonal Rank-1 or main TAR.
   - Gray main TAR fell 0.667 -> 0.609 after exclusion: the leaked designs were easy cases with
     a near-twin in train. Mild evidence the exclusions removed real inflation.
+
+---
+
+### D-45: The local manifest was NOT the training manifest; evaluation moves to Kaggle
+- **Finding (Anurag):** the Kaggle build of the same code and the same 1,633 images reported
+  Drive 96 designs, 311 train designs and 2,030 synthetic queries; the local build gives 95,
+  310 and 2,031. Kaggle 411 designs / 412 dup groups and the 2 split constraints match.
+- **Cause, verified:** not code (local `src/` and `configs/data.yaml` are identical to GitHub),
+  not data, not config. It is the environment. Re-verifying all 13,530 Drive pairs locally
+  shows seven matches within 0.01 of the NCC 0.90 acceptance gate (0.907 and 0.913 above;
+  0.899, 0.898, 0.897 below). ORB keypoints and RANSAC differ between OpenCV builds (local
+  5.0.0 on CPU), so a borderline match can flip. Many single flips reproduce Kaggle's counts,
+  so the exact Kaggle manifest cannot be reconstructed locally.
+- **Why one flip matters so much:** design ids are assigned by enumerating components, and
+  the split shuffles designs with ONE sequential RNG across (source, family) groups. One extra
+  Drive design changes the Drive shuffle and the RNG state for every Kaggle group after it, so
+  the whole split can differ, not just one image.
+- **My error, stated plainly:** I said checkpoints could be evaluated locally because builds
+  are deterministic. The determinism test only covers rebuilds on one machine.
+- **Fix:**
+  1. Evaluation runs on Kaggle (`notebooks/kaggle_eval.ipynb`), which rebuilds the manifest in
+     the training environment and ASSERTS the training run's numbers before scoring anything.
+  2. `configs/eval_exclude.yaml` v2 stores each audited leak as a LINK between two images keyed
+     by image_id (the stable SHA1 of the path: never renumbered, and free of Drive filenames, so
+     safe to commit). `evaluate.py` excludes a test design only when its linked partner is in
+     TRAIN in the manifest being evaluated, and reports how much of the current test set the
+     human audit covered. On the local manifest it reproduces the old result exactly: 27
+     designs, 324 queries, 93 test designs, pHash Rank-1 0.454.
+  3. `configs/real_colourway_pairs.csv` keys all 788 mined candidates by image_id with their
+     decisions. Same point estimates locally. It also fixed a bug: unreviewed pairs were
+     compared unsorted, so about 103 were counted as negatives (now 21,017 negatives, not
+     21,120); pHash AUC CI moves from [0.562, 0.820] to [0.546, 0.813].
+  4. `scripts/judge_d34.py` writes the bars from the baselines to `bars.json` BEFORE any
+     checkpoint is scored, then applies the D-34 rule mechanically. A fake checkpoint identical
+     to gray zero-shot correctly FAILS.
+- **Residual risk:** if Kaggle's split differs from the local one, some Kaggle test designs were
+  never in the human audit. The eval reports that coverage; a large gap would need a re-audit.
+- **What I would do with more time:** make identity robust to borderline flips (a margin band
+  around the gate, sent to human review), and assign splits by a hash of each design's stable
+  key instead of a sequential RNG, so one design changing cannot reshuffle the rest.
