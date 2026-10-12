@@ -148,10 +148,10 @@ assert got == EXPECT, "rebuilt manifest differs from the training run: do NOT ev
     md("""
 ## 4. Baselines, then the success bars, BEFORE any checkpoint is scored
 
-Exclusions are resolved against this manifest: human-audited image_id links first, then, for
+Exclusions are resolved against this manifest: inspected audit image_id links first, then, for
 test designs the audit never covered, a rule excluding any whose nearest train image has
-zero-shot DINOv2 cosine >= 0.90. The summary line reports reviewed+excluded, rule-excluded,
-unreviewed-kept and the final test design count. The bars are therefore computed AFTER all
+zero-shot DINOv2 cosine >= 0.90. The summary line reports audit-excluded, rule-excluded,
+outside-audit-kept, audit-set-kept and the final test design count. The bars are therefore computed AFTER all
 exclusions, and the resolved list is saved so the checkpoint run uses the identical test set.
 """),
     code("""

@@ -8,6 +8,44 @@ Developed with Claude Code as a coding assistant; every design decision is mine 
 
 I fine-tune the last 4 blocks of DINOv2 ViT-S/14 with a small head giving a 128-d normalised embedding. Images are resized to 224, duplicates merged, splits made by design. I train with supervised contrastive loss on batches of 32 designs x 4 views, sometimes forcing designs into one palette so colour can't separate them. Each view is recoloured, sometimes flipping light and dark, then cropped and rotated. I match by cosine similarity and accept pairs above a threshold set on validation.
 
+## Revisions since submission (2026-10-09)
+
+I submitted commit `7c7e44c` on 2026-10-02. These changes came after it. None of them changes
+the pre-registered criteria, the success bars, the test set or the verdict in DECISIONS.md D-47,
+and nothing was retrained or re-evaluated.
+
+* **Result charts added** (`831f1b4`, `docs/img/`): drawn from the reported numbers, to make the
+  main result and stress test B readable at a glance. No data images.
+* **Fallback wording in `scripts/judge_d34.py`**: its last printed line now names the fallback as
+  raw 384-d gray DINOv2 with no projection, matching D-34. Printed text only; the verdict logic
+  is unchanged.
+* **Data summary template in `src/data/build_manifest.py`**: no longer says the corpus has zero
+  real colourway pairs. Real colourway pairs exist in Kaggle (D-42); the summary now says so.
+  Text only; the manifest it builds is unchanged.
+* **Negative-pair count in this README**: corrected from 21,120 to 21,017, the number the
+  reported colourway evaluation actually used after the D-45 bug fix. The reported scores were
+  already computed with 21,017.
+* **Cross-environment determinism, Reproduce > Locally**: the README said a Kaggle checkpoint
+  could be evaluated locally against the same test set. That contradicts D-45, so it now says
+  builds are deterministic within one environment only, and that the reported evaluation ran on
+  Kaggle behind the seven-number fingerprint check.
+* **Kaggle steps, Reproduce > On Kaggle**: rewritten to match the two notebooks.
+* **Training notebook fixed** (`notebooks/kaggle_train.ipynb`, via `scripts/make_notebook.py`):
+  it symlinked the data into `data/`, which breaks the build because the adapters resolve paths
+  through the link. It now copies the data (unlinking any symlink first) and clones this
+  repository by default, exactly as `kaggle_eval.ipynb` does. The reported run had made the same
+  change by hand on Kaggle. No change to build, split or training logic.
+* **Audit wording**: earlier text called 113 of 120 test designs "human-reviewed". That number is
+  the test designs the audit RANKED by nearest-train similarity. Visually inspected: at least 48 (all 25
+  Drive designs at cosine >= 0.80 and at least 23 Kaggle designs). First-pass verdicts were made
+  by an AI assistant (Claude); the exclusion decisions and responsibility for them are mine.
+  Corrected here, in DECISIONS.md, and in the text `scripts/evaluate.py` prints.
+* **Learning-rate schedule finding (Limitations)**: with `max_steps` set to 3,000 and a time box
+  that stopped near 290 steps, warmup took 150 steps and the rate never decayed. Documented, not
+  changed: the schedule code is untouched and nothing was retrained.
+
+Each change is logged in DECISIONS.md D-48.
+
 ## Problem framing
 
 Identify a saree by its surface design regardless of colour palette: face recognition for
@@ -57,10 +95,15 @@ clusters straddle its boundaries.
 
 **3. Same-saree leakage (D-38, D-41).** Separate photographs of one saree share no pixels, so
 no content method links them. After splitting, a leakage audit ranked every test image's
-nearest train image; a human review (113 of the 120 test designs) found test designs that are
-the same saree as a train design, or a real colourway twin of one. On the reported build, **22
-test designs** are excluded by these audited links and **3 more** by a rule for the 7 designs the
-review did not cover (nearest train image at zero-shot DINOv2 cosine >= 0.90). **25 designs**
+nearest train image. The highest-similarity pairs were inspected visually on
+side-by-side contact sheets: **at least 48 of the 120 test designs** (all 25 Drive designs at cosine
+>= 0.80, and at least 23 Kaggle designs, the ones appearing in the reviewed colourway pairs).
+First-pass verdicts were made by an AI assistant (Claude); the exclusion decisions and
+responsibility for them are mine. The other 72 or fewer designs were not individually viewed.
+The inspection found test designs that are the same saree as a train design, or a real colourway
+twin of one. On the reported build, **22 test designs** are excluded by these inspected links and
+**3 more** by a rule for the 7 test designs that were outside the audited test set (nearest train
+image at zero-shot DINOv2 cosine >= 0.90). **25 designs**
 are excluded from every reported test number (`configs/eval_exclude.yaml`), including **17 of the
 38 Drive test designs**, leaving **95 test designs** (21 Drive, 74 Kaggle). No retraining was
 needed: removing the test side removes the leak.
@@ -69,7 +112,8 @@ needed: removing the test side removes the leak.
 Kaggle catalogue does: separately photographed products in the same print and different
 colours. Two early probes missed them because each assumed a same-design pair shares pixels or
 layout. Mining with grayscale DINOv2 neighbours plus a large hue difference, then judging
-contact sheets, gave **33 confirmed pairs** (top 60 of 788 candidates reviewed). The most
+contact sheets, gave **33 confirmed pairs** (top 60 of 788 candidates reviewed; the verdicts were
+made by an AI assistant, Claude, and the decision to use them is mine). The most
 common false match was different Ikat prints photographed on the same mannequin.
 
 ### Splits
@@ -129,7 +173,7 @@ of one saree are constrained to the same side of the split.
   for test.
 * **Stress B**: tier 1 same palette; tier 2 same palette and same craft family; tier 3 same
   tonal palette.
-* **Real colourway verification**: the 33 mined Kaggle pairs against 21,120 same-family
+* **Real colourway verification**: the 33 mined Kaggle pairs against 21,017 same-family
   negatives, ROC-AUC and TAR at FAR = 1e-2.
 * **Confidence intervals**: 95%, 1000 bootstrap resamples over **designs**, not queries,
   because the queries of one design are correlated.
@@ -215,9 +259,12 @@ trained as negatives, so fine-tuned models are underestimated here.
 **Recommended model: trained gray (step 284).** It leads RGB on every main metric, though their
 intervals overlap; the choice is made on test, which does not affect the verdict since both pass.
 
-**Test set:** 120 test designs: 22 excluded by audit links; 113 human-reviewed, of which 91 kept;
-7 unreviewed: 3 excluded by the cosine rule (nearest train >= 0.90), 4 kept; **final test set 95
-designs** (21 Drive, 74 Kaggle). Human audit coverage: 113 of 120 (94%).
+**Test set:** 120 test designs: 22 excluded by inspected audit links; 113 were in the test set
+the audit ranked (91 of them kept); 7 were outside it: 3 excluded by the cosine rule (nearest
+train >= 0.90), 4 kept; **final test set 95 designs** (21 Drive, 74 Kaggle). "In the ranked set"
+is not "viewed": at least 48 test designs were inspected visually, on the local build where the
+audit ran. First-pass verdicts were made by an AI assistant, Claude; the exclusion decisions and
+responsibility for them are mine.
 
 ### Main results (95 test designs, 95% CIs over designs)
 
@@ -291,17 +338,23 @@ batch 32 fp16 is 3.3x faster than fp32. Gallery search over a million 128-d fp16
 
 ### On Kaggle (the reported run)
 
-1. Create a **private** Kaggle dataset from this repository without `data/`, `outputs/` and
-   `.venv/`.
-2. Create a **private** dataset containing `Kaggle_data/`, and attach your own copy of
-   `Google_drive_data/` if you hold it. The Drive corpus is not distributed with this repository.
-3. Import `notebooks/kaggle_train.ipynb`. Settings: accelerator **GPU T4 x1**, internet **on**
-   (DINOv2 downloads from torch.hub). Attach both datasets; the notebook finds the folders
-   automatically at any depth.
-4. Run all, about 70 minutes: build the manifest, cache k-means maps, smoke test, train the RGB
-   and gray variants (time boxed), evaluate, profile on the T4, then a cleanup cell deletes
-   every derivative of the Drive corpus and verifies the deletion. Keep the notebook private:
-   the checkpoints are themselves derived from Drive images.
+Two notebooks, both on a **GPU T4 x1** with internet **on** (DINOv2 downloads from torch.hub).
+
+1. **Data.** Create a **private** Kaggle dataset holding `Kaggle_data/` and, if you hold it,
+   `Google_drive_data/`. The Drive corpus is not distributed with this repository. Both notebooks
+   find these folders by name at any depth.
+2. **Training, `notebooks/kaggle_train.ipynb`.** It clones this repository (or uses an attached
+   code dataset if `REPO_URL` is set to `""`), copies the data into `data/`, builds the manifest,
+   caches k-means maps, runs a smoke test, trains the RGB and gray variants (time boxed),
+   profiles on the T4, and ends with a cleanup cell that deletes every derivative of the Drive
+   corpus.
+3. **Evaluation, `notebooks/kaggle_eval.ipynb`.** It clones this repository, copies the data,
+   and finds `run_rgb/best.pt` and `run_gray/best.pt` anywhere under `/kaggle/input` (attach the
+   training notebook via Add Input > Your Work). It rebuilds the manifest and stops unless seven
+   numbers match the training run, scores the baselines and writes `bars.json`, then scores the
+   checkpoints and writes `verdict.json`, and ends with the same cleanup.
+
+Keep both notebooks private: the checkpoints are themselves derived from Drive images.
 
 ### Locally
 
@@ -318,9 +371,13 @@ python scripts/profile_model.py                     # params, FLOPs, latency (ru
 python -m pytest tests/ -q                          # 13 tests, offline, synthetic fixture
 ```
 
-Builds are deterministic: a test builds the manifest twice and asserts identical identities,
-splits and recolour seeds, so a checkpoint trained on Kaggle can be evaluated locally against
-the same test set.
+Builds are deterministic within one environment: a test builds the manifest twice and asserts
+identical identities, splits and recolour seeds. Across environments they are not guaranteed to
+match. A few geometric matches sit within 0.01 of the acceptance threshold, and ORB and RANSAC
+can decide them differently on another OpenCV build; one flipped match renumbers designs and can
+reshuffle the split (D-45). So a local rebuild is not the test set the checkpoints were trained
+for. The reported evaluation ran on Kaggle, in the training environment, behind a check that the
+rebuilt manifest reproduces seven numbers from the training run before anything is scored.
 
 ## Pretrained checkpoints and external data
 
@@ -334,6 +391,7 @@ No other pretrained weights or external data are used.
 ## Limitations
 
 * **Training was compute-limited.** Each run reached under 300 of 3,000 planned steps (294 for RGB, about 3 s per step, likely CPU-bound augmentation at full image resolution), so both checkpoints are undertrained. Validation was also near-saturated (mAP above 0.99), giving checkpoint selection little signal; test results with CIs are what we report (D-46).
+* **The learning-rate schedule never completed.** It was set for 3,000 steps, so warmup alone took 150 of the roughly 290 steps the time box allowed, and the rate was still at 99.4% of its peak when training stopped (D-48). Deriving `max_steps` from the time budget fixes it.
 * **Mostly synthetic colour positives.** Training uses synthetic recolours; the 33 real
   colourway pairs are an evaluation set only. Holding out both the palettes and the recolour
   algorithm guards against learning to invert our own generator, but cannot model dye bleed,
@@ -342,9 +400,12 @@ No other pretrained weights or external data are used.
   photographs of one saree in Drive carry different design ids, so SupCon saw some same-design
   pairs as negatives. This works against the colour-invariance objective and likely understates
   what the method can reach with clean labels.
-* **Post-hoc test exclusions.** 27 test designs were judged to leak and are excluded. The
-  judgement was visual, so a few same-saree pairs may remain undetected or a few distinct designs
-  may have been removed.
+* **Post-hoc test exclusions.** On the reported build, 25 test designs are excluded as likely
+  leaks: 22 through visually inspected audit links and 3 by the cosine >= 0.90 rule. At least 48
+  of the 120 test designs were viewed individually; the rest were not. First-pass verdicts were
+  made by an AI assistant (Claude), and the exclusion decisions and responsibility for them are
+  mine. A few same-saree
+  pairs may remain undetected, or a few distinct designs may have been removed.
 * **Fine-tuning reduced real framing invariance.** On real crops of one saree, both trained
   models score below zero-shot gray (real_view 0.761 vs 0.891). The synthetic training views do
   not yet capture real region and framing changes; real multi-view positives in training are the

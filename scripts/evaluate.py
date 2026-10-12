@@ -158,8 +158,9 @@ def resolve_exclusions(path: Path, data_config: str, device: str = "cpu") -> tup
       both in test, or partner in val       -> not a train leak; kept, and logged
       neither side in test                  -> nothing to do
 
-    Also reports how many of the current test designs the human audit actually reviewed, since
-    a different split can put never-audited designs into test.
+    Also reports how many of the current test designs were in the test set the audit RANKED
+    (not the smaller set that was inspected visually), since a different split can put designs
+    the audit never saw into test.
     """
     if not path.exists():
         return [], ""
@@ -202,10 +203,10 @@ def resolve_exclusions(path: Path, data_config: str, device: str = "cpu") -> tup
     test_designs = set(real.loc[real["split"] == "test", "design_id"])
     covered = set(real.loc[real["image_id"].isin(audited), "design_id"]) & test_designs
     # Every link exclusion counts as audit-based, including a PARTNER design that moved into
-    # test on this split and was never reviewed itself: the human judged the pair, not the side.
+    # test on this split and was never inspected itself: the verdict covers the pair.
     reviewed_excluded = sorted(set(excluded))
 
-    # Rule for designs the human audit never saw (Kaggle's split can differ from the audited
+    # Rule for designs outside the ranked audit set (Kaggle's split can differ from the audited
     # one). Evidence from the audit: 12 of 12 Drive pairs at cosine >= 0.91 were the same
     # saree, and 7 of 13 in 0.80 to 0.91. Same embedding as the leakage audit: zero-shot DINOv2
     # (RGB, 224), max cosine over all the design's real test images vs all real train images.
@@ -232,13 +233,13 @@ def resolve_exclusions(path: Path, data_config: str, device: str = "cpu") -> tup
     assert (len(reviewed_excluded) + len(rule_excluded) + kept_unreviewed + kept_reviewed
             == len(test_designs)), "exclusion counts do not add up to the test set"
     summary = (f"{len(test_designs)} test designs: {len(reviewed_excluded)} excluded by audit "
-               f"links; {len(covered)} human-reviewed, of which {kept_reviewed} kept; "
-               f"{len(unreviewed)} unreviewed: {len(rule_excluded)} excluded by the cosine rule "
+               f"links; {len(covered)} in the ranked audit set, of which {kept_reviewed} kept; "
+               f"{len(unreviewed)} outside it: {len(rule_excluded)} excluded by the cosine rule "
                f"(nearest train >= {thr}), {kept_unreviewed} kept; "
                f"final test set {final} designs")
-    print(f"[eval] EXCLUSION SUMMARY: reviewed+excluded {len(reviewed_excluded)} | "
-          f"rule-excluded {len(rule_excluded)} | unreviewed-kept {kept_unreviewed} | "
-          f"reviewed-kept {kept_reviewed} | final test designs {final} "
+    print(f"[eval] EXCLUSION SUMMARY: audit-excluded {len(reviewed_excluded)} | "
+          f"rule-excluded {len(rule_excluded)} | outside-audit-kept {kept_unreviewed} | "
+          f"audit-set-kept {kept_reviewed} | final test designs {final} "
           f"(of {len(test_designs)})")
 
     import json as _json
@@ -462,7 +463,7 @@ def main() -> int:
     test_q = load_manifest(split="test", role="query", config_path=args.data_config)
 
     # Post-hoc leakage exclusion, resolved against THIS manifest (configs/eval_exclude.yaml):
-    # human-audited links first, then a cosine rule for test designs the audit never covered.
+    # inspected audit links first, then a cosine rule for test designs outside the ranked set.
     # Resolved ONCE and saved, so the baseline run and the checkpoint run use the same test set.
     if args.exclusions_from:
         excluded, coverage = load_resolved(Path(args.exclusions_from), args.data_config)

@@ -97,7 +97,7 @@ def cmd_verdict(args) -> int:
               f"{bars['guardrail_main_rank1_min']:.3f}  {'ok' if guard_ok else 'FAILS'}")
     Path(args.out).write_text(json.dumps(out, indent=2), encoding="utf-8")
     any_success = any(o["verdict"] == "SUCCESS" for o in out)
-    print(f"[judge] D-34 outcome: {'at least one checkpoint succeeds' if any_success else 'no checkpoint succeeds: ship gray zero-shot DINOv2 plus projection (fallback note)'}")
+    print(f"[judge] D-34 outcome: {'at least one checkpoint succeeds' if any_success else 'no checkpoint succeeds: ship raw 384-d gray zero-shot DINOv2 as measured, no projection (fallback note, D-34)'}")
     return 0
 
 

@@ -292,7 +292,7 @@ Study guide for the live follow-up. One entry per decision.
 
 ### D-22: Post-split leakage audit, because our detector has a known blind spot
 - **Decision:** After splitting, embed every test and train real image and report, for each
-  test image, its nearest train neighbour by cosine, writing the top matches for human review.
+  test image, its nearest train neighbour by cosine, writing the top matches for visual review.
 - **Why:** The invariants prove no `design_id` or `dup_group` crosses a split, but only for
   identity our grouping could *see*. pHash already fooled us once (D-03). An independent
   check on a different representation bounds the residual risk.
@@ -531,13 +531,15 @@ Recorded before either Kaggle run, so the bar cannot be moved to fit the result.
   (cosine >= 0.93, not verifiable): the strongest is #4, drive_d00003 vs drive_d00083, NCC
   0.853 after a 90 degree rotation with 64 inliers. Suggestive, since a crop-and-rotate
   positive control had median NCC 0.68, but a symmetric motif rotated 90 degrees can also
-  match a different fabric. A human decides from `outputs/leakage_pairs.jpg`.
+  match a different fabric. Decided by visual inspection of `outputs/leakage_pairs.jpg`; in the
+  event, first-pass verdicts were made by an AI assistant (Claude); the exclusion decisions and
+  responsibility for them are Anurag's (D-48).
 - **Mechanism:** test designs judged to be the same saree go in `configs/eval_exclude.yaml`;
   `evaluate.py` drops them from test gallery AND queries, logs the count, and states the
   exclusion at the top of the results. No retrain: removing the test side removes the
   possible leak from every reported number. Tested: excluding drive_d00003 drops 1 design and
   14 queries.
-- **Status at time of writing:** list empty, pending Anurag's visual review.
+- **Status at time of writing:** list empty, pending the visual audit (how it was done: D-48).
 - **Why evaluate locally rather than re-run on Kaggle:** the Kaggle cleanup cell deletes the
   manifest and synthetic queries, so the evaluate cell cannot be re-run there. Builds are
   deterministic (`test_build_is_deterministic`), so the local manifest is identical to Kaggle's
@@ -587,14 +589,16 @@ Recorded before either Kaggle run, so the bar cannot be moved to fit the result.
 ---
 
 ### D-41: Drive same-saree leakage: 19 of 38 Drive test designs excluded post hoc
-- **Finding:** Anurag's visual audit judged 19 of the 38 Drive test designs to be separate
+- **Finding:** in a visual audit, first-pass verdicts were made by an AI assistant (Claude);
+  the exclusion decisions and responsibility for them are Anurag's. The audit judged 19 of the
+  38 Drive test designs to be separate
   photographs of a saree that also appears in train. Plus 8 Kaggle test designs with a real
   colourway twin in train. 27 test designs in `configs/eval_exclude.yaml`.
 - **Cause:** separate photographs of one saree share no pixels, so the geometric identity
   check (which only links overlapping crops) cannot connect them, and the leakage safety net
   needs a shared distinctive filename, which Drive's opaque numeric names never provide. My
   pixel-level re-check of the top 20 audit pairs verified none (best NCC 0.853, rotated 90
-  degrees). Human judgement found what content matching could not.
+  degrees). Visual inspection found what content matching could not.
 - **Consequence:** half the Drive test set was leaked. Excluding it leaves 19 Drive test
   designs, so Drive-only confidence intervals are roughly twice as wide.
 - **Fix chosen:** post-hoc exclusion from test, no retrain (D-38). The model has seen the
@@ -669,7 +673,7 @@ Recorded before either Kaggle run, so the bar cannot be moved to fit the result.
      by image_id (the stable SHA1 of the path: never renumbered, and free of Drive filenames, so
      safe to commit). `evaluate.py` excludes a test design only when its linked partner is in
      TRAIN in the manifest being evaluated, and reports how much of the current test set the
-     human audit covered. On the local manifest it reproduces the old result exactly: 27
+     ranked audit set covered. On the local manifest it reproduces the old result exactly: 27
      designs, 324 queries, 93 test designs, pHash Rank-1 0.454.
   3. `configs/real_colourway_pairs.csv` keys all 788 mined candidates by image_id with their
      decisions. Same point estimates locally. It also fixed a bug: unreviewed pairs were
@@ -679,12 +683,13 @@ Recorded before either Kaggle run, so the bar cannot be moved to fit the result.
      checkpoint is scored, then applies the D-34 rule mechanically. A fake checkpoint identical
      to gray zero-shot correctly FAILS.
 - **Residual risk:** if Kaggle's split differs from the local one, some Kaggle test designs were
-  never in the human audit. The eval reports that coverage; a large gap would need a re-audit.
+  never in the ranked audit set. The eval reports that coverage; a large gap would need a
+  re-audit.
 - **Rule for unreviewed test designs (added before any checkpoint was scored):** a test design
-  the visual audit never covered is excluded if its nearest TRAIN image by zero-shot DINOv2
+  outside the ranked audit set is excluded if its nearest TRAIN image by zero-shot DINOv2
   cosine is >= 0.90. Evidence: in the audit, 12 of 12 Drive pairs at cosine >= 0.91 were the
   same saree, and 7 of 13 in 0.80 to 0.91. Applied to Drive and Kaggle alike, with the same
-  embedding the leakage audit used. Human judgement overrides it for reviewed designs.
+  embedding the leakage audit used. Inspected audit verdicts override it.
   - Reported every run: reviewed+excluded, rule-excluded, unreviewed-kept, final test design
     count (`outputs/exclusions_resolved.json`).
   - Resolved ONCE in the baseline run and reused, verified by a manifest fingerprint, in the
@@ -742,7 +747,8 @@ Recorded before either Kaggle run, so the bar cannot be moved to fit the result.
 
 ### D-47: Verdict under D-34: both fine-tuned checkpoints SUCCEED
 - **Test set (Kaggle build, fingerprint 24d15b8521fb29ec):** 120 test designs; 22 excluded by
-  audited links; 113 human-reviewed (91 kept); 7 unreviewed, of which 3 excluded by the cosine
+  audited links; 113 in the ranked audit set (91 kept); 7 outside it, of which 3 excluded by
+  the cosine
   rule and 4 kept; **95 final** (21 Drive, 74 Kaggle). Bars from D-43 (final).
 - **trained RGB (step 294): SUCCESS.**
   - tonal Rank-1 0.943 [0.901, 0.977] vs bar 0.705: beats
@@ -776,3 +782,55 @@ Recorded before either Kaggle run, so the bar cannot be moved to fit the result.
   FLOPs on the T4 run: 12.25 GFLOPs = 6.12 GMACs (torch 2.10); D-39's 11.03 came from torch 2.14
   locally. Same model; the counter versions count attention differently, so the T4 figure is the
   reported one.
+
+---
+
+### D-48: Post-submission wording corrections (2026-10-09), results unchanged
+- **Context:** DeepLure shortlisted the submission and asked for a review and revision before
+  the interview. Submitted commit: `7c7e44c` (2026-10-02).
+- **Changes (text corrections, plus one notebook fix in item 7):**
+  1. `scripts/judge_d34.py` final printed line: the fallback is raw 384-d gray zero-shot DINOv2,
+     no projection, matching the D-34 wording correction. Verdict logic untouched.
+  2. `src/data/build_manifest.py`: the data summary no longer claims zero real colourway pairs,
+     and a code comment no longer says the corpus is not supposed to contain them. Both now
+     match D-42 (real pairs exist in Kaggle as separate photographs). The manifest the builder
+     writes is unchanged; only the summary markdown text differs.
+  3. README evaluation protocol: negatives 21,120 corrected to 21,017, the count the reported
+     Kaggle colourway evaluation used after the D-45 fix. D-40 keeps its original figure as the
+     historical record; D-45 documents the change.
+  4. README section "Revisions since submission (2026-10-09)", which also discloses that the
+     result charts (`831f1b4`) were added after the submitted commit.
+  5. README Reproduce > Locally: removed the claim that a Kaggle checkpoint can be evaluated
+     locally against the same test set, which contradicted D-45. Builds are deterministic within
+     one environment (the test proves it), not across environments.
+  6. README Reproduce > On Kaggle: rewritten to match the notebooks.
+  7. `kaggle_train.ipynb` fixed (generator `scripts/make_notebook.py`): it symlinked the data,
+     and `Path.resolve()` in the adapters follows a symlink out of `data/`, so the build failed.
+     It now unlinks any symlink and copies the data with `shutil.copytree`, finds folders with
+     the same structure check as the eval notebook, and clones `REPO_URL` by default. The
+     reported training run had made this change by hand. No build, split or training logic
+     touched. Checked by simulating the data cell (folders copied, decoy skipped, no symlinks).
+  8. Audit wording corrected in README, D-22, D-38, D-41, D-45, D-47, `configs/eval_exclude.yaml`
+     and the text `scripts/evaluate.py` prints. "113 of 120 human-reviewed" was wrong: 113 is
+     the number of Kaggle-build test designs that were in the test set the audit RANKED (the
+     local 120; `audited_test_image_ids` lists all of them). Visually inspected, counted from
+     the files: **at least 48 of the 120 local test designs**. Drive: exactly 25, every Drive test design
+     with nearest-train cosine >= 0.80 (12 at >= 0.91, 13 in 0.80 to 0.91, matching the audit
+     notes; all 19 Drive exclusions are among them). Kaggle: at least 23, the Kaggle test
+     designs appearing in the 60 colourway pairs judged on contact sheets, which include all 5
+     Kaggle rows of `leakage_verdicts.csv` and all 8 Kaggle exclusions. "At least" because the
+     audit contact sheets have no saved index and contain Drive images, so they were not
+     reopened to count. First-pass verdicts were made by an AI assistant (Claude); the
+     exclusion decisions and responsibility for them are Anurag's. The remaining 72 or fewer local test designs were not individually viewed; on the Kaggle build
+     the 7 test designs outside the ranked set went to the cosine >= 0.90 rule.
+- **Finding, documented only: the LR schedule never completed.** `max_steps` was 3,000 with a 5%
+  warmup, so warmup was 150 steps, but the time box stopped the runs at 294 (RGB) and 284 (gray).
+  Computed from `lr_lambda_factory`: the rate reached its peak at step 150 and was still 0.994 of
+  peak at step 294. So half of each run was warmup and the cosine decay never happened. Fix:
+  derive `max_steps` from the time budget and the measured step time (about 2,400 steps for a
+  35 minute run at about 0.8 s per step after the D-46 speed fix). Added to README Limitations.
+- **Unchanged, deliberately:** pre-registered criteria (D-34), bars (D-43), test set (D-45) and
+  verdict (D-47). No retraining, no re-evaluation.
+- **Why:** each was a statement that contradicted a later decision in this log. A reviewer
+  checking one against the other would find the inconsistency; fixing the text is cheaper than
+  explaining it.

@@ -417,7 +417,8 @@ def build(config_path: str, limit_source: int | None = None) -> pd.DataFrame:
             f"({multi} multi-image), {len(set(dup_comps)):,} dup groups")
 
         # A verified pair with a clearly different palette inside the overlap would be a real
-        # colourway pair, which the corpus is not supposed to contain. Flag any for review.
+        # colourway pair of overlapping crops. None were found this way; the real colourway pairs
+        # in Kaggle are separate photographs, found later by mining (D-42). Flag any for review.
         for r in records:
             hv = r.get("hue_overlap")
             if hv is not None and hv == hv and hv >= hue_cfg.different_palette_min:
@@ -727,9 +728,11 @@ def write_summary(df: pd.DataFrame, cfg: dict, pools: dict, multiview: set[str])
 
     colorway = df[(df["role"] == "query") & (df["query_kind"] != "real_view")]
     out += ["## Honest limitations", "",
-            "- The corpus contains **zero real colourway pairs**. Verified by exhaustive "
-            "matching with hue compared inside the aligned overlap. So every colour-varying "
-            f"positive is synthetic ({len(colorway):,} rows).",
+            "- The Drive corpus has no real colourway pairs. The Kaggle catalogue does: "
+            "separately photographed products in the same print and different colours, which "
+            "pixel-overlap matching cannot find (D-40, D-42). Every colour-varying positive in "
+            f"this manifest is synthetic ({len(colorway):,} rows); the real Kaggle pairs are an "
+            "evaluation set only.",
             "- Kaggle images were stretched to 640x640 by Roboflow, distorting aspect ratio, "
             "and carry salt-and-pepper noise. Drive images are untouched.",
             "- Pairs of non-overlapping tiles from one saree cannot be detected by any "

@@ -39,8 +39,9 @@ The only cell you should need to edit.
 
 * Data folders `Google_drive_data/` and `Kaggle_data/` are found automatically in whatever
   datasets you attached, at any nesting depth. They may live in separate datasets.
-* The code is found automatically as the attached folder containing `src/`, `configs/` and
-  `scripts/`, or set `REPO_URL` to clone it instead.
+* The code is cloned from `REPO_URL` (this repository on GitHub). Set `REPO_URL = ""` to use
+  an attached dataset holding the repository instead; it is found automatically as the folder
+  containing `src/`, `configs/` and `scripts/`.
 * `INCLUDE_DRIVE = False` trains and evaluates on the public Kaggle source only, which avoids
   placing the proprietary corpus on Kaggle at all. See the README for that trade-off.
 """),
@@ -50,7 +51,7 @@ The only cell you should need to edit.
 DRIVE_DIR = "auto"                               # folder named Google_drive_data
 KAGGLE_DIR = "auto"                              # folder named Kaggle_data
 CODE_INPUT = "auto"                              # folder containing src/ and configs/
-REPO_URL = ""                                    # alternatively, a git URL to clone
+REPO_URL = "https://github.com/Anurag-YadavIIH/saree-design-matching"   # "" = attached code dataset
 INCLUDE_DRIVE = True                             # proprietary corpus, private dataset
 
 WORK = "/kaggle/working/saree-reid"
@@ -96,15 +97,29 @@ print("torch", torch.__version__, "| cuda", torch.cuda.is_available(),
 assert torch.cuda.is_available(), "Enable a GPU: Settings > Accelerator > GPU T4 x1"
 """),
     md("""
-## 3. Wire the data in
+## 3. Copy the data in
 
-`/kaggle/input` is read-only, but the build writes synthetic queries and a k-means cache
-under `data/`. So `data/` is a real, writable folder here, and only the two raw source
-folders are symlinked into it. Every relative path in the code then works unchanged.
+The data is COPIED into `data/`, not symlinked. The adapters compute each image path with
+`Path.resolve()`, which follows a symlink out of `data/` into `/kaggle/input`, so a symlinked
+folder breaks the relative-path step and the build fails. Copies also give `data/` the writable
+space the build needs for synthetic queries and the k-means cache. This is what the reported
+training run did, and what `kaggle_eval.ipynb` does.
 """),
     code("""
 data_dir = Path(WORK) / "data"
 data_dir.mkdir(exist_ok=True)
+# Each folder must contain the subfolder the adapter expects and enough images, so a nested
+# duplicate or a partial folder (for example inside an attached notebook output) is never picked.
+EXPECTED_CHILD = {"Google_drive_data": "handloom_sarees", "Kaggle_data": "train"}
+
+def find_data(name, min_images=100):
+    for p in sorted(Path("/kaggle/input").rglob(name)):
+        if (p.is_dir() and (p / EXPECTED_CHILD[name]).is_dir()
+                and sum(1 for _ in p.rglob("*.jpg")) >= min_images):
+            return p
+    raise FileNotFoundError(f"no '{name}' folder containing '{EXPECTED_CHILD[name]}/' "
+                            f"with >= {min_images} images under /kaggle/input")
+
 sources = {
     "Google_drive_data": DRIVE_DIR if DRIVE_DIR != "auto" else None,
     "Kaggle_data": KAGGLE_DIR if KAGGLE_DIR != "auto" else None,
@@ -113,12 +128,15 @@ for name, explicit in sources.items():
     if name == "Google_drive_data" and not INCLUDE_DRIVE:
         print(f"skipping {name} (INCLUDE_DRIVE=False)")
         continue
-    src = Path(explicit) if explicit else find_dir(name)
+    src = Path(explicit) if explicit else find_data(name)
+    assert src.exists(), f"missing {name}: check DRIVE_DIR / KAGGLE_DIR"
     dst = data_dir / name
-    assert src.exists(), f"missing {src}: check DRIVE_DIR / KAGGLE_DIR"
+    if dst.is_symlink():
+        os.unlink(dst)                       # remove the link only; never rmtree through it
     if not dst.exists():
-        dst.symlink_to(src, target_is_directory=True)
-    print(f"linked {dst} -> {src}")
+        shutil.copytree(src, dst)
+    # Counts only: printing folder or file names would put Drive paths in the notebook.
+    print(f"{name}: {sum(1 for _ in dst.rglob('*.jpg'))} images copied")
 
 if not INCLUDE_DRIVE:
     # Disable the Drive source in the data config so the adapters never look for it.
@@ -242,7 +260,7 @@ KEEP = {
       for name in ("train_summary.json", "train_log.csv", "best.pt")],
 }
 
-# 1. data/: the two raw source folders are SYMLINKS into read-only /kaggle/input. unlink()
+# 1. data/: the raw source folders are COPIES (cell 3); a leftover symlink is unlinked. unlink()
 #    removes only the link and never touches the target; rmtree would try to walk into it.
 data = work / "data"
 if data.exists():
